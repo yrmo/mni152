@@ -18,3 +18,7 @@
 ## mni152-axial-slice-flipbook.py
 
 ![](mni152-axial-slice-flipbook.jpg)
+
+## mni152-asymmetry.ipynb
+
+Left–right asymmetry of the ICBM 2009c asymmetric T1. A raw mirror subtraction, the same map after a blur (right frontal and left occipital petalia), and a left-versus-right look at the lateral fissure.
