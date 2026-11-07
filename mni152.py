@@ -312,12 +312,12 @@ def draw(data, affine):
 
     fig = plt.figure(figsize=(11.6, 11.2))
     fig_w, fig_h = fig.get_size_inches()
-    # Equal cells. Axial and coronal on top, sagittal under axial, and the
-    # 3D view with its sliders in the remaining cell.
-    margin_x = 0.32
-    margin_top = 0.58
-    margin_bottom = 0.26
-    gap = 0.32
+    # Equal cells in a cluster, with room outside the group. Left-column
+    # views sit on the gutter; right-column views do the same.
+    margin_x = 1.15
+    margin_top = 0.56
+    margin_bottom = 0.30
+    gap = 0.42
     cell_w = (fig_w - 2 * margin_x - gap) / 2
     cell_h = (fig_h - margin_top - margin_bottom - gap) / 2
 
@@ -340,8 +340,10 @@ def draw(data, affine):
         else:
             width = avail_w
             height = width / aspect
+        # Face the neighboring column instead of the window edge.
+        x = cx + cell_w - width if col == 0 else cx
         ax = fig.add_axes([
-            (cx + (cell_w - width) / 2) / fig_w,
+            x / fig_w,
             (cy + cell_h - title_in - height) / fig_h,
             width / fig_w,
             height / fig_h,
@@ -399,9 +401,11 @@ def draw(data, affine):
     slider_block = 3 * slider_h + 2 * slider_gap
     plot_top = cy + cell_h - title_in
     plot_floor = cy + 0.02 + slider_block + 0.46
-    side = min(cell_w - 0.15, plot_top - plot_floor)
+    # Inset so the z label and the slider names stay clear of the sagittal cell.
+    inset = 0.34
+    side = min(cell_w - inset - 0.62, plot_top - plot_floor)
     ax3 = fig.add_axes([
-        (cx + (cell_w - side) / 2) / fig_w,
+        (cx + inset) / fig_w,
         (plot_top - side) / fig_h,
         side / fig_w,
         side / fig_h,
@@ -441,13 +445,11 @@ def draw(data, affine):
     ax3.set_title("Drag to rotate", fontsize=12, pad=4)
 
     sliders = []
-    label_w = 0.92
-    value_w = 0.78
     for slot, (name, axis, color) in enumerate(PLANES):
         ax_s = fig.add_axes([
-            (cx + label_w) / fig_w,
+            (cx + inset) / fig_w,
             (cy + 0.04 + (2 - slot) * (slider_h + slider_gap)) / fig_h,
-            (cell_w - label_w - value_w) / fig_w,
+            side / fig_w,
             slider_h / fig_h,
         ])
         slider = Slider(
