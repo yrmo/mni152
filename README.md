@@ -1,4 +1,6 @@
-# NIfTI/MNI152
+# MNI152
+
+## Dataset
 
 | Dataset | Description | Link |
 |---------|----------------------|------|
@@ -11,13 +13,9 @@
 
 **Not committed due to filesize
 
-## mni152-axial-coronal-sagittal.py
+## mni152.py
 
-![](MNI152.jpg)
-
-## mni152-axial-slice-flipbook.py
-
-![](mni152-axial-slice-flipbook.jpg)
+Axial, coronal, sagittal MNI152 slices with visualization of slice planes.
 
 ## mni152-asymmetry.ipynb
 
