@@ -434,6 +434,7 @@ def draw(data, affine):
     ax3.set_autoscale_on(False)
     ax3.set_proj_type("ortho")
     ax3.view_init(elev=28, azim=40)
+    ax3.mouse_init(rotate_btn=[])
     ax3.set_xlabel("x (mm)", fontsize=8, labelpad=2)
     ax3.set_ylabel("y (mm)", fontsize=8, labelpad=2)
     ax3.set_zlabel("z (mm)", fontsize=8, labelpad=2)
@@ -442,7 +443,6 @@ def draw(data, affine):
     for axis3d in (ax3.xaxis, ax3.yaxis, ax3.zaxis):
         axis3d.pane.fill = False
         axis3d.pane.set_edgecolor((0, 0, 0, 0))
-    ax3.set_title("Drag to rotate", fontsize=12, pad=4)
 
     sliders = []
     for slot, (name, axis, color) in enumerate(PLANES):
