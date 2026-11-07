@@ -19,12 +19,12 @@ ROOT = Path(__file__).resolve().parent
 
 # Pick one volume.
 # https://niivue.github.io/niivue-demo-images/mni152.nii.gz
-# PATH = ROOT / "mni152.nii" / "mni152.nii"
-# PATH = ROOT / "icbm_avg_152_t1_tal_lin.nii" / "icbm_avg_152_t1_tal_lin.nii"
-# PATH = ROOT / "minimal.nii" / "minimal.nii"
-# PATH = ROOT / "avg152T1_RL_nifti.nii" / "avg152T1_RL_nifti.nii"
-# PATH = ROOT / "mni_icbm152_t1_tal_nlin_asym_09c.nii" / "mni_icbm152_t1_tal_nlin_asym_09c.nii"
-PATH = ROOT / "mni_icbm152_t1_tal_nlin_asym_09b_hires.nii" / "mni_icbm152_t1_tal_nlin_asym_09b_hires.nii"
+# PATH = ROOT / "mni152.nii"
+# PATH = ROOT / "icbm_avg_152_t1_tal_lin.nii"
+# PATH = ROOT / "minimal.nii"
+# PATH = ROOT / "avg152T1_RL_nifti.nii"
+# PATH = ROOT / "mni_icbm152_t1_tal_nlin_asym_09c.nii"
+PATH = ROOT / "mni_icbm152_t1_tal_nlin_asym_09b_hires.nii"
 
 # Quads along each side of a 3D slice. The side panels stay full resolution.
 # This grid is only the rotatable texture, kept coarse so dragging stays light.
