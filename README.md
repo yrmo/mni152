@@ -17,7 +17,7 @@
 
 View brain slices of the MNI152 dataset with visualization of brain slice planes.
 
-The volume is the uncommented `PATH` near the top of `mni152.py`. Comment that line and uncomment another to switch files. Each path is a NIfTI file next to the script. The default is the 0.5 mm ICBM 2009b nonlinear asymmetric template.
+The window opens on the uncommented `PATH` near the top of `mni152.py`. The menu between the 3D view and the sliders switches to any other NIfTI file next to the script. The default is the 0.5 mm ICBM 2009b nonlinear asymmetric template.
 
 ## mni152-asymmetry.ipynb
 

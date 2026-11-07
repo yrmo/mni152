@@ -2,6 +2,7 @@
 
 Four cells: axial, coronal, sagittal, and the 3D planes with their sliders.
 Scroll or drag a panel to move that slice. The sliders do the same.
+A menu between the 3D view and the sliders opens another NIfTI file.
 """
 
 from pathlib import Path
@@ -11,7 +12,7 @@ import nibabel as nib
 import numpy as np
 from matplotlib import patheffects
 from matplotlib.image import _resample
-from matplotlib.patches import Patch
+from matplotlib.patches import Patch, Polygon, Rectangle
 from matplotlib.path import Path as MPath
 from matplotlib.transforms import Affine2D
 from matplotlib.widgets import Slider
@@ -19,7 +20,8 @@ from mpl_toolkits.mplot3d import proj3d
 
 ROOT = Path(__file__).resolve().parent
 
-# Pick one volume.
+# Volume opened at startup. The menu under the 3D view lists every
+# NIfTI file next to this script.
 # https://niivue.github.io/niivue-demo-images/mni152.nii.gz
 # PATH = ROOT / "mni152.nii"
 # PATH = ROOT / "icbm_avg_152_t1_tal_lin.nii"
@@ -305,10 +307,174 @@ def _position_text(affine, axis, index):
     return f"{'xyz'[axis]} = {mm:.0f} mm"
 
 
-def draw(data, affine):
+def _is_nifti(path):
+    name = path.name.lower()
+    return path.is_file() and (name.endswith(".nii") or name.endswith(".nii.gz"))
+
+
+def volume_choices(current):
+    """NIfTI files next to this script, with the open file included."""
+    current = Path(current).resolve()
+    choices = sorted(
+        (path.resolve() for path in ROOT.iterdir() if _is_nifti(path)),
+        key=lambda path: path.name.lower(),
+    )
+    if current not in choices:
+        choices.insert(0, current)
+    return choices
+
+
+class _VolumeMenu:
+    """Closed filename button. The list opens upward over the 3D view."""
+
+    def __init__(self, fig, rect, paths, current):
+        self.fig = fig
+        self.rect = rect
+        self.paths = list(paths)
+        self.current = Path(current)
+        self.is_open = False
+        self.popup = None
+        self._rows = []
+        self._hover = None
+        self._over_button = False
+        self.ax = fig.add_axes(rect, zorder=7)
+        self.ax.set_navigate(False)
+        self.ax.set_xlim(0, 1)
+        self.ax.set_ylim(0, 1)
+        self.ax.set_xticks([])
+        self.ax.set_yticks([])
+        self.ax.set_facecolor("#f6f6f6")
+        for spine in self.ax.spines.values():
+            spine.set_color("#b5b5b5")
+            spine.set_linewidth(0.7)
+        self.label = self.ax.text(
+            0.03, 0.5, self.current.name,
+            ha="left", va="center", fontsize=9, color="#222222",
+            clip_on=True,
+        )
+        self.label.set_clip_path(Rectangle(
+            (0.0, 0.0), 0.90, 1.0, transform=self.ax.transData,
+        ))
+        self._chevron = Polygon(
+            [[0.942, 0.60], [0.978, 0.60], [0.960, 0.36]],
+            closed=True, facecolor="#555555", edgecolor="none",
+        )
+        self.ax.add_patch(self._chevron)
+
+    def set_label(self, text):
+        self.label.set_text(text)
+
+    def hover_button(self, over):
+        if over == self._over_button:
+            return False
+        self._over_button = over
+        self.ax.set_facecolor("#eaeaea" if over else "#f6f6f6")
+        return True
+
+    def _point_chevron(self, upward):
+        if upward:
+            points = [[0.942, 0.40], [0.978, 0.40], [0.960, 0.64]]
+        else:
+            points = [[0.942, 0.60], [0.978, 0.60], [0.960, 0.36]]
+        self._chevron.set_xy(points)
+
+    def open_menu(self):
+        if self.is_open:
+            return
+        count = len(self.paths)
+        x, y, width, height = self.rect
+        room = max(height, 0.99 - (y + height))
+        row_h = min(height, room / max(count, 1))
+        popup_h = row_h * count
+        self.popup = self.fig.add_axes([x, y + height, width, popup_h], zorder=8)
+        self.popup.set_navigate(False)
+        self.popup.set_xlim(0, 1)
+        self.popup.set_ylim(count, 0)
+        self.popup.set_xticks([])
+        self.popup.set_yticks([])
+        self.popup.set_facecolor("#ffffff")
+        for spine in self.popup.spines.values():
+            spine.set_color("#b5b5b5")
+            spine.set_linewidth(0.7)
+        self.popup.spines["bottom"].set_visible(False)
+        self.ax.spines["top"].set_visible(False)
+        self.ax.set_facecolor("#ffffff")
+        self._rows = []
+        for index, path in enumerate(self.paths):
+            selected = path == self.current
+            row = Rectangle(
+                (0, index), 1, 1,
+                facecolor="#e4edf8" if selected else "#ffffff",
+                edgecolor="none",
+            )
+            self.popup.add_patch(row)
+            weight = "medium" if selected else "normal"
+            self.popup.text(
+                0.03, index + 0.5, path.name,
+                ha="left", va="center", fontsize=9, color="#1c1c1c",
+                fontweight=weight, clip_on=True, zorder=2,
+            )
+            self._rows.append(row)
+        self._point_chevron(True)
+        self.is_open = True
+        self._hover = None
+
+    def close_menu(self):
+        if not self.is_open:
+            return
+        self.popup.remove()
+        self.popup = None
+        self._rows = []
+        self.is_open = False
+        self._hover = None
+        self._over_button = False
+        self.ax.spines["top"].set_visible(True)
+        self.ax.set_facecolor("#f6f6f6")
+        self._point_chevron(False)
+
+    def toggle(self):
+        if self.is_open:
+            self.close_menu()
+        else:
+            self.open_menu()
+
+    def row_at(self, event):
+        if not self.is_open or event.inaxes is not self.popup or event.ydata is None:
+            return None
+        row = int(np.floor(event.ydata))
+        if 0 <= row < len(self.paths):
+            return row
+        return None
+
+    def hover_row(self, row):
+        if row == self._hover:
+            return False
+        self._hover = row
+        for index, patch in enumerate(self._rows):
+            selected = self.paths[index] == self.current
+            if index == row:
+                patch.set_facecolor("#d3e2f4" if selected else "#f0f0f0")
+            else:
+                patch.set_facecolor("#e4edf8" if selected else "#ffffff")
+        return True
+
+
+def draw(path):
+    path = Path(path).resolve()
+    data, affine = load(path)
     lo, hi, fade, solid = display_levels(data)
     indices = index_at_world_zero(affine, data.shape)
     box = tissue_box(data, solid)
+    state = {
+        "path": path,
+        "data": data,
+        "affine": affine,
+        "lo": lo,
+        "hi": hi,
+        "fade": fade,
+        "solid": solid,
+        "box": box,
+    }
 
     fig = plt.figure(figsize=(11.6, 11.2))
     fig_w, fig_h = fig.get_size_inches()
@@ -328,9 +494,10 @@ def draw(data, affine):
 
     panels = []
     title_in = 0.36
-    for axis, (col, row) in zip(PANEL_ORDER, ((0, 0), (1, 0), (0, 1))):
-        cx, cy = cell_box(col, row)
-        _u_axis, _v_axis, n_u, n_v = _crosshair_geometry(data.shape, axis)
+
+    def panel_rect(shape, axis, col, row):
+        px, py = cell_box(col, row)
+        _u_axis, _v_axis, n_u, n_v = _crosshair_geometry(shape, axis)
         aspect = n_u / max(n_v, 1)
         avail_w = cell_w
         avail_h = cell_h - title_in
@@ -341,13 +508,16 @@ def draw(data, affine):
             width = avail_w
             height = width / aspect
         # Face the neighboring column instead of the window edge.
-        x = cx + cell_w - width if col == 0 else cx
-        ax = fig.add_axes([
+        x = px + cell_w - width if col == 0 else px
+        return [
             x / fig_w,
-            (cy + cell_h - title_in - height) / fig_h,
+            (py + cell_h - title_in - height) / fig_h,
             width / fig_w,
             height / fig_h,
-        ])
+        ]
+
+    for axis, (col, row) in zip(PANEL_ORDER, ((0, 0), (1, 0), (0, 1))):
+        ax = fig.add_axes(panel_rect(data.shape, axis, col, row))
         image = _slice(data, axis, indices[axis])
         n_u, n_v = image.shape
         artist = ax.imshow(
@@ -393,20 +563,31 @@ def draw(data, affine):
             "axes": ax,
             "mm": mm,
             "letter": letter,
+            "col": col,
+            "row": row,
         })
 
     cx, cy = cell_box(1, 1)
-    slider_h = 0.20
-    slider_gap = 0.08
+    # Shorter sliders leave a row for the file menu. The 3D view is a
+    # fraction of that leftover square, centered in it, so the planes sit
+    # smaller in the cell and a little above the menu.
+    slider_h = 0.15
+    slider_gap = 0.04
+    slider_bottom = 0.02
+    menu_h = 0.24
+    menu_gap = 0.05
     slider_block = 3 * slider_h + 2 * slider_gap
     plot_top = cy + cell_h - title_in
-    plot_floor = cy + 0.02 + slider_block + 0.46
+    plot_floor = cy + slider_bottom + slider_block + menu_gap + menu_h + 0.40
     # Inset so the z label and the slider names stay clear of the sagittal cell.
     inset = 0.34
-    side = min(cell_w - inset - 0.62, plot_top - plot_floor)
+    controls_w = min(cell_w - inset - 0.62, plot_top - plot_floor)
+    side = controls_w * 0.72
+    view_x = cx + inset + (controls_w - side) / 2
+    view_y = plot_floor + (plot_top - plot_floor - side) / 2
     ax3 = fig.add_axes([
-        (cx + inset) / fig_w,
-        (plot_top - side) / fig_h,
+        view_x / fig_w,
+        view_y / fig_h,
         side / fig_w,
         side / fig_h,
     ], projection="3d")
@@ -448,8 +629,8 @@ def draw(data, affine):
     for slot, (name, axis, color) in enumerate(PLANES):
         ax_s = fig.add_axes([
             (cx + inset) / fig_w,
-            (cy + 0.04 + (2 - slot) * (slider_h + slider_gap)) / fig_h,
-            side / fig_w,
+            (cy + slider_bottom + (2 - slot) * (slider_h + slider_gap)) / fig_h,
+            controls_w / fig_w,
             slider_h / fig_h,
         ])
         slider = Slider(
@@ -460,7 +641,7 @@ def draw(data, affine):
             valinit=indices[axis],
             valstep=1,
             color=color,
-            handle_style={"size": 8},
+            handle_style={"size": 7},
         )
         slider.drawon = False
         slider.label.set_color(color)
@@ -469,9 +650,23 @@ def draw(data, affine):
         slider.valtext.set_fontsize(9)
         sliders.append(slider)
 
+    menu = _VolumeMenu(
+        fig,
+        [
+            (cx + inset) / fig_w,
+            (cy + slider_bottom + slider_block + menu_gap) / fig_h,
+            controls_w / fig_w,
+            menu_h / fig_h,
+        ],
+        volume_choices(path),
+        path,
+    )
+
     shown = {"ready": False}
 
     def refresh_2d():
+        data = state["data"]
+        affine = state["affine"]
         current = [int(slider.val) for slider in sliders]
         for panel in panels:
             axis = panel["axis"]
@@ -496,6 +691,13 @@ def draw(data, affine):
         fig.canvas.blit(fig.bbox)
 
     def refresh_3d():
+        data = state["data"]
+        affine = state["affine"]
+        lo = state["lo"]
+        hi = state["hi"]
+        fade = state["fade"]
+        solid = state["solid"]
+        box = state["box"]
         current = [int(slider.val) for slider in sliders]
         for axis, (_name, _axis, _color) in enumerate(PLANES):
             u_axis, v_axis, n_u, n_v = _crosshair_geometry(data.shape, axis)
@@ -545,12 +747,81 @@ def draw(data, affine):
         slider.on_changed(on_slide)
 
     def set_plane(axis, index):
-        index = int(np.clip(round(index), 0, data.shape[axis] - 1))
+        index = int(np.clip(round(index), 0, state["data"].shape[axis] - 1))
         if int(sliders[axis].val) == index:
             return
         sliders[axis].set_val(index)
 
     drag = {"axis": None, "y": 0.0, "index": 0, "height": 1.0}
+
+    def apply_volume(data, affine, new_path):
+        lo, hi, fade, solid = display_levels(data)
+        origin = index_at_world_zero(affine, data.shape)
+        state.update(
+            path=new_path,
+            data=data,
+            affine=affine,
+            lo=lo,
+            hi=hi,
+            fade=fade,
+            solid=solid,
+            box=tissue_box(data, solid),
+        )
+        for panel in panels:
+            axis = panel["axis"]
+            panel["axes"].set_position(panel_rect(data.shape, axis, panel["col"], panel["row"]))
+            image = _slice(data, axis, origin[axis])
+            n_u, n_v = image.shape
+            panel["artist"].set_data(np.rot90(image))
+            panel["artist"].set_extent((-0.5, n_u - 0.5, n_v - 0.5, -0.5))
+            panel["artist"].set_clim(lo, hi)
+            panel["axes"].set_xlim(-0.5, n_u - 0.5)
+            panel["axes"].set_ylim(n_v - 0.5, -0.5)
+            panel["n_v"] = n_v
+        low, high = volume_bounds(affine, data.shape)
+        span = np.maximum(high - low, 1.0)
+        pad = span * 0.03
+        ax3.set_xlim(low[0] - pad[0], high[0] + pad[0])
+        ax3.set_ylim(low[1] - pad[1], high[1] + pad[1])
+        ax3.set_zlim(low[2] - pad[2], high[2] + pad[2])
+        ax3.set_box_aspect(tuple(span), zoom=1.12)
+        for slider, (_name, axis, _color) in zip(sliders, PLANES):
+            slider.valmin = 0
+            slider.valmax = max(data.shape[axis] - 1, 1)
+            slider.ax.set_xlim(slider.valmin, slider.valmax)
+            index = origin[axis]
+            slider.eventson = False
+            slider.set_val(index)
+            slider.vline.set_xdata([index, index])
+            slider.valinit = index
+            slider.eventson = True
+        drag["axis"] = None
+        pending["dirty"] = False
+        timer.stop()
+        was_ready = shown["ready"]
+        shown["ready"] = False
+        refresh_2d()
+        shown["ready"] = was_ready
+        refresh_3d()
+        fig.suptitle(new_path.name, fontsize=13)
+
+    def pick(new_path):
+        new_path = Path(new_path).resolve()
+        menu.close_menu()
+        if new_path == state["path"]:
+            fig.canvas.draw_idle()
+            return
+        menu.set_label("Loading...")
+        fig.canvas.draw()
+        try:
+            loaded, loaded_affine = load(new_path)
+            apply_volume(loaded, loaded_affine, new_path)
+        except Exception:
+            menu.set_label(state["path"].name)
+            fig.canvas.draw_idle()
+            raise
+        menu.current = new_path
+        menu.set_label(new_path.name)
 
     def panel_at(inaxes):
         for panel in panels:
@@ -559,6 +830,8 @@ def draw(data, affine):
         return None
 
     def on_scroll(event):
+        if menu.is_open and event.inaxes in (menu.ax, menu.popup):
+            return
         panel = panel_at(event.inaxes)
         if panel is None or not event.step:
             return
@@ -566,6 +839,19 @@ def draw(data, affine):
         set_plane(panel["axis"], int(sliders[panel["axis"]].val) + step)
 
     def on_press(event):
+        if event.button == 1 and event.inaxes is menu.ax:
+            menu.toggle()
+            fig.canvas.draw_idle()
+            return
+        if menu.is_open:
+            row = menu.row_at(event) if event.button == 1 else None
+            if row is not None:
+                pick(menu.paths[row])
+                return
+            menu.close_menu()
+            fig.canvas.draw_idle()
+            if event.button != 1:
+                return
         if event.button != 1 or event.y is None:
             return
         panel = panel_at(event.inaxes)
@@ -577,11 +863,16 @@ def draw(data, affine):
         drag["height"] = max(panel["axes"].bbox.height, 1.0)
 
     def on_motion(event):
+        if menu.is_open:
+            if menu.hover_row(menu.row_at(event)):
+                fig.canvas.draw_idle()
+        elif menu.hover_button(event.inaxes is menu.ax):
+            fig.canvas.draw_idle()
         axis = drag["axis"]
         if axis is None or event.y is None:
             return
         # A drag the height of the panel walks the whole stack.
-        span = max(data.shape[axis] - 1, 1)
+        span = max(state["data"].shape[axis] - 1, 1)
         delta = (event.y - drag["y"]) / drag["height"] * span
         set_plane(axis, drag["index"] + delta)
 
@@ -594,28 +885,34 @@ def draw(data, affine):
     def on_draw(_event):
         shown["ready"] = True
 
+    def on_key(event):
+        if event.key == "escape" and menu.is_open:
+            menu.close_menu()
+            fig.canvas.draw_idle()
+
     fig.canvas.mpl_connect("draw_event", on_draw)
     fig.canvas.mpl_connect("scroll_event", on_scroll)
     fig.canvas.mpl_connect("button_press_event", on_press)
     fig.canvas.mpl_connect("motion_notify_event", on_motion)
     fig.canvas.mpl_connect("button_release_event", on_release)
+    fig.canvas.mpl_connect("key_press_event", on_key)
     fig._slice_timer = timer
-    # Sliders are only weakly referenced by the canvas. Keep them with the figure.
+    # Sliders and the menu are only weakly referenced by the canvas.
     fig._slice_sliders = sliders
+    fig._volume_menu = menu
 
     for slider, (_name, axis, _color) in zip(sliders, PLANES):
         slider.valtext.set_text(_position_text(affine, axis, indices[axis]))
     refresh_3d()
     pending["dirty"] = False
-    fig.suptitle(PATH.name, fontsize=13)
+    fig.suptitle(path.name, fontsize=13)
     return fig
 
 
 def main():
     if not PATH.exists():
         raise SystemExit(f"missing {PATH}")
-    data, affine = load(PATH)
-    draw(data, affine)
+    draw(PATH)
     plt.show()
 
 
