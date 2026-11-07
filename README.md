@@ -15,7 +15,11 @@
 
 ## mni152.py
 
-Axial, coronal, sagittal MNI152 slices with visualization of slice planes.
+View brain slices of the MNI152 dataset with visualization of brain slice planes.
+
+The volume is the uncommented `PATH` near the top of `mni152.py`. Comment that line and uncomment another to switch files. Each path is a folder next to the script that holds a NIfTI of the same name. The default is the 0.5 mm ICBM 2009b nonlinear asymmetric template.
+
+![](Figure_1.png)
 
 ## mni152-asymmetry.ipynb
 
