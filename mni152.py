@@ -1,6 +1,6 @@
 """Orthogonal slices of one NIfTI volume, in 2D and in place in 3D.
 
-The 2D panels are the voxels. The 3D view is those same three slices.
+Four cells: axial, coronal, sagittal, and the 3D planes with their sliders.
 Scroll or drag a panel to move that slice. The sliders do the same.
 """
 
@@ -310,35 +310,41 @@ def draw(data, affine):
     indices = index_at_world_zero(affine, data.shape)
     box = tissue_box(data, solid)
 
-    fig = plt.figure(figsize=(12.4, 10.2))
+    fig = plt.figure(figsize=(11.6, 11.2))
     fig_w, fig_h = fig.get_size_inches()
-    # Each panel is only as wide as its slice. A shared column grid left a
-    # wide empty margin inside every axes, which pushed the brains apart.
-    panel_height = 3.8
-    panel_gap = 0.18
-    panel_widths = []
-    for axis in PANEL_ORDER:
-        _u_axis, _v_axis, n_u, n_v = _crosshair_geometry(data.shape, axis)
-        panel_widths.append(panel_height * n_u / max(n_v, 1))
-    pack = sum(panel_widths) + panel_gap * (len(panel_widths) - 1)
-    room = fig_w * 0.96
-    if pack > room:
-        scale = room / pack
-        panel_height *= scale
-        panel_gap *= scale
-        panel_widths = [width * scale for width in panel_widths]
-        pack = room
-    panel_top = 0.905
-    panel_bottom = panel_top - panel_height / fig_h
-    x_in = (fig_w - pack) / 2.0
+    # Equal cells. Axial and coronal on top, sagittal under axial, and the
+    # 3D view with its sliders in the remaining cell.
+    margin_x = 0.32
+    margin_top = 0.58
+    margin_bottom = 0.26
+    gap = 0.32
+    cell_w = (fig_w - 2 * margin_x - gap) / 2
+    cell_h = (fig_h - margin_top - margin_bottom - gap) / 2
+
+    def cell_box(col, row):
+        x = margin_x + col * (cell_w + gap)
+        y = margin_bottom + (1 - row) * (cell_h + gap)
+        return x, y
 
     panels = []
-    for axis, width in zip(PANEL_ORDER, panel_widths):
+    title_in = 0.36
+    for axis, (col, row) in zip(PANEL_ORDER, ((0, 0), (1, 0), (0, 1))):
+        cx, cy = cell_box(col, row)
+        _u_axis, _v_axis, n_u, n_v = _crosshair_geometry(data.shape, axis)
+        aspect = n_u / max(n_v, 1)
+        avail_w = cell_w
+        avail_h = cell_h - title_in
+        if avail_w / max(avail_h, 0.1) > aspect:
+            height = avail_h
+            width = height * aspect
+        else:
+            width = avail_w
+            height = width / aspect
         ax = fig.add_axes([
-            x_in / fig_w,
-            panel_bottom,
+            (cx + (cell_w - width) / 2) / fig_w,
+            (cy + cell_h - title_in - height) / fig_h,
             width / fig_w,
-            panel_height / fig_h,
+            height / fig_h,
         ])
         image = _slice(data, axis, indices[axis])
         n_u, n_v = image.shape
@@ -386,12 +392,20 @@ def draw(data, affine):
             "mm": mm,
             "letter": letter,
         })
-        x_in += width + panel_gap
 
-    plot_top = panel_bottom - 0.02
-    # The cube sits right of the sliders. mplot3d then squares this wide axes
-    # around the volume, which leaves the lower left free for the sliders.
-    ax3 = fig.add_axes([0.18, 0.10, 0.80, plot_top - 0.10], projection="3d")
+    cx, cy = cell_box(1, 1)
+    slider_h = 0.20
+    slider_gap = 0.08
+    slider_block = 3 * slider_h + 2 * slider_gap
+    plot_top = cy + cell_h - title_in
+    plot_floor = cy + 0.02 + slider_block + 0.46
+    side = min(cell_w - 0.15, plot_top - plot_floor)
+    ax3 = fig.add_axes([
+        (cx + (cell_w - side) / 2) / fig_w,
+        (plot_top - side) / fig_h,
+        side / fig_w,
+        side / fig_h,
+    ], projection="3d")
     pieces = [_PlanePiece() for _ in range(12)]
     for piece in pieces:
         ax3.add_patch(piece)
@@ -412,7 +426,7 @@ def draw(data, affine):
     ax3.set_xlim(low[0] - pad[0], high[0] + pad[0])
     ax3.set_ylim(low[1] - pad[1], high[1] + pad[1])
     ax3.set_zlim(low[2] - pad[2], high[2] + pad[2])
-    ax3.set_box_aspect(tuple(span), zoom=1.32)
+    ax3.set_box_aspect(tuple(span), zoom=1.12)
     ax3.set_autoscale_on(False)
     ax3.set_proj_type("ortho")
     ax3.view_init(elev=28, azim=40)
@@ -424,11 +438,18 @@ def draw(data, affine):
     for axis3d in (ax3.xaxis, ax3.yaxis, ax3.zaxis):
         axis3d.pane.fill = False
         axis3d.pane.set_edgecolor((0, 0, 0, 0))
-    ax3.set_title("Slice planes (drag to rotate)", fontsize=11, pad=0)
+    ax3.set_title("Drag to rotate", fontsize=12, pad=4)
 
     sliders = []
+    label_w = 0.92
+    value_w = 0.78
     for slot, (name, axis, color) in enumerate(PLANES):
-        ax_s = fig.add_axes([0.105, 0.082 - slot * 0.030, 0.20, 0.016])
+        ax_s = fig.add_axes([
+            (cx + label_w) / fig_w,
+            (cy + 0.04 + (2 - slot) * (slider_h + slider_gap)) / fig_h,
+            (cell_w - label_w - value_w) / fig_w,
+            slider_h / fig_h,
+        ])
         slider = Slider(
             ax_s,
             name,
