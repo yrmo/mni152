@@ -11,6 +11,7 @@ to open that file instead: python mni152.py volume.nii
 
 import argparse
 from pathlib import Path
+import time
 import tkinter
 
 import matplotlib.pyplot as plt
@@ -46,7 +47,9 @@ PLANES = (
 PANEL_ORDER = (2, 1, 0)
 # Axial and coronal can show either convention. The L stays on subject left.
 LETTER_AXES = (1, 2)
-SETTLE_MS = 80
+# While a slider is held, repaint the 3D planes on this cadence.
+# The 2D panels still repaint on every step.
+PLANE_MS = 16
 
 # White page. Ink for type, a hairline for controls, plane color only on the
 # slices, the sliders, and the 3D frames.
@@ -728,6 +731,22 @@ def _row_check(ax, index, count):
     ax.add_line(line)
 
 
+def _fill_white(renderer, x0, y0, x1, y1):
+    """Cover a display-space rectangle so a moving mark does not leave a trail.
+
+    The Agg buffer's first row is the top of the window. Display y grows upward.
+    """
+    arr = np.asarray(renderer.buffer_rgba())
+    height, width = arr.shape[:2]
+    left = max(0, int(np.floor(x0)))
+    right = min(width, int(np.ceil(x1)))
+    top = max(0, int(np.floor(height - y1)))
+    bottom = min(height, int(np.ceil(height - y0)))
+    if right <= left or bottom <= top:
+        return
+    arr[top:bottom, left:right] = 255
+
+
 def _style_slider(slider, color):
     """Thin track, white knob. The axes stays invisible around the rail."""
     slider.ax.set_facecolor("none")
@@ -1336,6 +1355,47 @@ def draw(path):
     )
 
     shown = {"ready": False}
+    readout = {}
+
+    def _clear_readouts(renderer):
+        if not readout:
+            width, height, _descent = renderer.get_text_width_height_descent(
+                "x = -999 mm", _font(9), False,
+            )
+            readout["width"] = width + 6
+            readout["height"] = height + 4
+            readout["radius"] = (5.0 + 1.05) * fig.dpi / 72.0
+        width = readout["width"]
+        height = readout["height"]
+        for panel in panels:
+            bb = panel["axes"].bbox
+            # The millimetre line sits just above the panel, aligned to its bottom.
+            baseline = bb.y1 + 0.02 * bb.height
+            _fill_white(
+                renderer,
+                bb.x1 - width,
+                baseline - 2,
+                bb.x1 + 3,
+                baseline + height,
+            )
+        radius = readout["radius"]
+        for slider in sliders:
+            bb = slider.ax.bbox
+            extra = max(1.0, radius - bb.height / 2.0 + 1.0)
+            _fill_white(
+                renderer,
+                bb.x0 - extra, bb.y0 - extra,
+                bb.x1 + extra, bb.y1 + extra,
+            )
+            mid = (bb.y0 + bb.y1) / 2.0
+            text_x = bb.x1 + 0.02 * bb.width
+            _fill_white(
+                renderer,
+                text_x - 2,
+                mid - height / 2.0,
+                text_x + width,
+                mid + height / 2.0,
+            )
 
     def refresh_2d():
         data = state["data"]
@@ -1351,12 +1411,15 @@ def draw(path):
             panel["mm"].set_text(_position_text(affine, axis, current[axis]))
         for slider, (_name, axis, _color) in zip(sliders, PLANES):
             slider.valtext.set_text(_position_text(affine, axis, current[axis]))
-        # The slice and the sliders repaint in place. The 3D planes stay as
-        # they were until the drag settles, so this does not rebuild them.
+        # The slice and the sliders repaint in place. The 3D planes repaint
+        # on their own cadence, so this does not rebuild them.
         if not shown["ready"]:
             fig.canvas.draw_idle()
             return
         renderer = fig.canvas.get_renderer()
+        # The knob and the millimetre text hang outside their axes, and the
+        # axes background is clear, so the old pixels have to be wiped first.
+        _clear_readouts(renderer)
         for panel in panels:
             panel["axes"].draw(renderer)
         for slider in sliders:
@@ -1392,25 +1455,55 @@ def draw(path):
                     ua - 0.5, ub - 0.5, va - 0.5, vb - 0.5,
                 )
                 piece.set_piece(rgba[va:vb, ua:ub], corners)
-        fig.canvas.draw_idle()
+        if not shown["ready"]:
+            fig.canvas.draw_idle()
+            return
+        # Draw straight into the buffer. draw_idle would wait until the mouse
+        # goes quiet, so a held slider would not move the planes.
+        renderer = fig.canvas.get_renderer()
+        ax3.draw(renderer)
+        fig.canvas.blit(ax3.bbox)
 
-    pending = {"dirty": False}
-    timer = fig.canvas.new_timer(interval=SETTLE_MS)
-    timer.single_shot = True
+    pending = {"dirty": False, "running": False}
+    painted = {"t": 0.0}
+    timer = fig.canvas.new_timer(interval=PLANE_MS)
 
-    def flush_3d():
+    def pump_3d():
         if not pending["dirty"]:
+            pending["running"] = False
+            timer.stop()
             return
         pending["dirty"] = False
-        timer.stop()
-        refresh_3d()
+        painted["t"] = time.perf_counter()
+        try:
+            refresh_3d()
+        finally:
+            # A newer position may have been queued while the planes were drawing.
+            if not pending["dirty"]:
+                pending["running"] = False
+                timer.stop()
 
     def schedule_3d():
         pending["dirty"] = True
-        timer.stop()
+        if pending["running"]:
+            return
+        pending["running"] = True
+        elapsed_ms = (time.perf_counter() - painted["t"]) * 1000.0
+        timer.interval = max(1, int(PLANE_MS - elapsed_ms))
         timer.start()
 
-    timer.add_callback(flush_3d)
+    def flush_3d():
+        if not pending["dirty"]:
+            pending["running"] = False
+            timer.stop()
+            return
+        pending["dirty"] = False
+        pending["running"] = False
+        timer.stop()
+        painted["t"] = time.perf_counter()
+        refresh_3d()
+
+    timer.add_callback(pump_3d)
 
     def on_slide(_value):
         refresh_2d()
@@ -1485,12 +1578,13 @@ def draw(path):
             slider.eventson = True
         drag["axis"] = None
         pending["dirty"] = False
+        pending["running"] = False
         timer.stop()
         was_ready = shown["ready"]
         shown["ready"] = False
         refresh_2d()
-        shown["ready"] = was_ready
         refresh_3d()
+        shown["ready"] = was_ready
         set_heading(new_path.name)
 
     def pick(new_path):
