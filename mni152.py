@@ -3,6 +3,7 @@
 Four cells: axial, coronal, sagittal, and the 3D planes with their sliders.
 Scroll or drag a panel to move that slice. The sliders do the same.
 A menu between the 3D view and the sliders opens another NIfTI file.
+The control above the 3D view sets neurological or radiological display.
 """
 
 from pathlib import Path
@@ -37,7 +38,7 @@ PLANES = (
     ("Axial", 2, "#3a6fbe"),
 )
 PANEL_ORDER = (2, 1, 0)
-# Axial and coronal put subject right on the image left. The L is subject left.
+# Axial and coronal can show either convention. The L stays on subject left.
 LETTER_AXES = (1, 2)
 SETTLE_MS = 80
 
@@ -463,19 +464,22 @@ def _crosshair_geometry(shape, axis):
     return u_axis, v_axis, shape[u_axis], shape[v_axis]
 
 
-def _screen_dirs(axis):
+def _screen_dirs(axis, radiological):
     """World direction of screen-right and screen-up for one slice panel."""
     if axis == 0:
+        # From the subject's right: anterior is screen-right, superior is up.
         return (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)
+    # Radiological axial and coronal put subject right on the image left.
+    lateral = -1.0 if radiological else 1.0
     if axis == 1:
-        return (-1.0, 0.0, 0.0), (0.0, 0.0, 1.0)
-    return (-1.0, 0.0, 0.0), (0.0, 1.0, 0.0)
+        return (lateral, 0.0, 0.0), (0.0, 0.0, 1.0)
+    return (lateral, 0.0, 0.0), (0.0, 1.0, 0.0)
 
 
-def _display_geometry(affine, shape, axis):
+def _display_geometry(affine, shape, axis, radiological):
     """Which voxel axis runs across and down the panel, and whether it is flipped."""
     u_axis, v_axis = [a for a in range(3) if a != axis]
-    right, up = _screen_dirs(axis)
+    right, up = _screen_dirs(axis, radiological)
     du = affine[:3, u_axis]
     dv = affine[:3, v_axis]
     u_right = float(np.dot(du, right))
@@ -514,6 +518,18 @@ def _present(data, axis, index, geom):
 
 def _display_coord(index, length, flipped):
     return (length - 1 - index) if flipped else index
+
+
+def _place_side_letter(letter, radiological):
+    """Park the L marker on the subject's left side of the panel."""
+    if letter is None:
+        return
+    if radiological:
+        letter.set_position((0.965, 0.50))
+        letter.set_ha("right")
+    else:
+        letter.set_position((0.035, 0.50))
+        letter.set_ha("left")
 
 
 def _position_text(affine, axis, index):
@@ -675,6 +691,80 @@ class _VolumeMenu:
         return True
 
 
+class _ConventionToggle:
+    """Neurological and radiological segments above the 3D view."""
+
+    LABELS = ("Neurological", "Radiological")
+
+    def __init__(self, fig, rect, radiological=True):
+        self.radiological = bool(radiological)
+        self._hover = None
+        self.ax = fig.add_axes(rect, zorder=6)
+        self.ax.set_navigate(False)
+        self.ax.set_xlim(0, 2)
+        self.ax.set_ylim(0, 1)
+        self.ax.set_xticks([])
+        self.ax.set_yticks([])
+        self.ax.set_facecolor("#f6f6f6")
+        self.ax.set_autoscale_on(False)
+        for spine in self.ax.spines.values():
+            spine.set_color("#b5b5b5")
+            spine.set_linewidth(0.7)
+        self._faces = []
+        self._labels = []
+        for index, name in enumerate(self.LABELS):
+            face = Rectangle(
+                (index, 0), 1, 1,
+                facecolor="#f6f6f6", edgecolor="none", zorder=1,
+            )
+            self.ax.add_patch(face)
+            label = self.ax.text(
+                index + 0.5, 0.5, name,
+                ha="center", va="center", fontsize=9, color="#1c1c1c",
+                clip_on=True, zorder=2,
+            )
+            self._faces.append(face)
+            self._labels.append(label)
+        self._divider = self.ax.plot(
+            [1, 1], [0, 1], color="#b5b5b5", lw=0.7,
+            solid_capstyle="butt", zorder=3, clip_on=True,
+        )[0]
+        self._paint()
+
+    def _paint(self):
+        for index, (face, label) in enumerate(zip(self._faces, self._labels)):
+            selected = (index == 1) == self.radiological
+            if selected and index == self._hover:
+                face.set_facecolor("#d3e2f4")
+            elif selected:
+                face.set_facecolor("#e4edf8")
+            elif index == self._hover:
+                face.set_facecolor("#eaeaea")
+            else:
+                face.set_facecolor("#f6f6f6")
+            label.set_fontweight("medium" if selected else "normal")
+
+    def side_at(self, event):
+        if event.inaxes is not self.ax or event.xdata is None:
+            return None
+        return 0 if event.xdata < 1 else 1
+
+    def hover(self, side):
+        if side == self._hover:
+            return False
+        self._hover = side
+        self._paint()
+        return True
+
+    def select(self, radiological):
+        radiological = bool(radiological)
+        if radiological == self.radiological:
+            return False
+        self.radiological = radiological
+        self._paint()
+        return True
+
+
 def draw(path):
     path = Path(path).resolve()
     data, affine = load(path)
@@ -690,6 +780,7 @@ def draw(path):
         "fade": fade,
         "solid": solid,
         "box": box,
+        "radiological": True,
     }
 
     fig = plt.figure(figsize=(11.6, 11.2))
@@ -733,7 +824,7 @@ def draw(path):
         ]
 
     for axis, (col, row) in zip(PANEL_ORDER, ((0, 0), (1, 0), (0, 1))):
-        geom = _display_geometry(affine, data.shape, axis)
+        geom = _display_geometry(affine, data.shape, axis, state["radiological"])
         ax = fig.add_axes(panel_rect(geom["n_col"], geom["n_row"], col, row))
         artist = ax.imshow(
             _present(data, axis, indices[axis], geom),
@@ -768,6 +859,7 @@ def draw(path):
                 path_effects=[patheffects.withStroke(linewidth=2.4, foreground=(0, 0, 0, 0.7))],
                 zorder=4,
             )
+            _place_side_letter(letter, state["radiological"])
         panels.append({
             "axis": axis,
             "artist": artist,
@@ -875,6 +967,18 @@ def draw(path):
         volume_choices(path),
         path,
     )
+    toggle_h = 0.24
+    toggle_y = cy + cell_h - (title_in + toggle_h) / 2
+    convention = _ConventionToggle(
+        fig,
+        [
+            (cx + inset) / fig_w,
+            toggle_y / fig_h,
+            controls_w / fig_w,
+            toggle_h / fig_h,
+        ],
+        radiological=state["radiological"],
+    )
 
     shown = {"ready": False}
 
@@ -968,6 +1072,29 @@ def draw(path):
 
     drag = {"axis": None, "y": 0.0, "index": 0, "height": 1.0}
 
+    def sync_panel(panel, index):
+        data = state["data"]
+        affine = state["affine"]
+        geom = _display_geometry(affine, data.shape, panel["axis"], state["radiological"])
+        panel.update(geom)
+        panel["axes"].set_position(panel_rect(geom["n_col"], geom["n_row"], panel["col"], panel["row"]))
+        panel["artist"].set_data(_present(data, panel["axis"], index, geom))
+        panel["artist"].set_extent((-0.5, geom["n_col"] - 0.5, geom["n_row"] - 0.5, -0.5))
+        panel["axes"].set_xlim(-0.5, geom["n_col"] - 0.5)
+        panel["axes"].set_ylim(geom["n_row"] - 0.5, -0.5)
+        panel["v_line"].set_color(PLANES[geom["col_axis"]][2])
+        panel["h_line"].set_color(PLANES[geom["row_axis"]][2])
+        _place_side_letter(panel["letter"], state["radiological"])
+
+    def apply_convention():
+        current = [int(slider.val) for slider in sliders]
+        for panel in panels:
+            sync_panel(panel, current[panel["axis"]])
+        was_ready = shown["ready"]
+        shown["ready"] = False
+        refresh_2d()
+        shown["ready"] = was_ready
+
     def apply_volume(data, affine, new_path):
         lo, hi, fade, solid = display_levels(data)
         origin = index_at_world_zero(affine, data.shape)
@@ -982,17 +1109,8 @@ def draw(path):
             box=tissue_box(data, solid),
         )
         for panel in panels:
-            axis = panel["axis"]
-            geom = _display_geometry(affine, data.shape, axis)
-            panel.update(geom)
-            panel["axes"].set_position(panel_rect(geom["n_col"], geom["n_row"], panel["col"], panel["row"]))
-            panel["artist"].set_data(_present(data, axis, origin[axis], geom))
-            panel["artist"].set_extent((-0.5, geom["n_col"] - 0.5, geom["n_row"] - 0.5, -0.5))
+            sync_panel(panel, origin[panel["axis"]])
             panel["artist"].set_clim(lo, hi)
-            panel["axes"].set_xlim(-0.5, geom["n_col"] - 0.5)
-            panel["axes"].set_ylim(geom["n_row"] - 0.5, -0.5)
-            panel["v_line"].set_color(PLANES[geom["col_axis"]][2])
-            panel["h_line"].set_color(PLANES[geom["row_axis"]][2])
         low, high = volume_bounds(affine, data.shape)
         span = np.maximum(high - low, 1.0)
         pad = span * 0.03
@@ -1054,6 +1172,17 @@ def draw(path):
         set_plane(panel["axis"], int(sliders[panel["axis"]].val) + step)
 
     def on_press(event):
+        if event.button == 1 and event.inaxes is convention.ax:
+            closed = menu.is_open
+            if closed:
+                menu.close_menu()
+            side = convention.side_at(event)
+            if side is not None and convention.select(side == 1):
+                state["radiological"] = convention.radiological
+                apply_convention()
+            elif closed:
+                fig.canvas.draw_idle()
+            return
         if event.button == 1 and event.inaxes is menu.ax:
             menu.toggle()
             fig.canvas.draw_idle()
@@ -1078,10 +1207,15 @@ def draw(path):
         drag["height"] = max(panel["axes"].bbox.height, 1.0)
 
     def on_motion(event):
+        changed = False
         if menu.is_open:
             if menu.hover_row(menu.row_at(event)):
-                fig.canvas.draw_idle()
+                changed = True
         elif menu.hover_button(event.inaxes is menu.ax):
+            changed = True
+        if convention.hover(convention.side_at(event)):
+            changed = True
+        if changed and drag["axis"] is None:
             fig.canvas.draw_idle()
         axis = drag["axis"]
         if axis is None or event.y is None:
@@ -1115,6 +1249,7 @@ def draw(path):
     # Sliders and the menu are only weakly referenced by the canvas.
     fig._slice_sliders = sliders
     fig._volume_menu = menu
+    fig._convention_toggle = convention
 
     for slider, (_name, axis, _color) in zip(sliders, PLANES):
         slider.valtext.set_text(_position_text(affine, axis, indices[axis]))
