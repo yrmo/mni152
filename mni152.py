@@ -16,10 +16,12 @@ import tkinter
 import matplotlib.pyplot as plt
 import nibabel as nib
 import numpy as np
-from matplotlib import patheffects
+from matplotlib import font_manager, patheffects
 from matplotlib.image import _resample
-from matplotlib.patches import Patch, Polygon, Rectangle
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch, PathPatch, Rectangle
 from matplotlib.path import Path as MPath
+from matplotlib.ticker import MaxNLocator
 from matplotlib.transforms import Affine2D
 from matplotlib.widgets import Slider
 from mpl_toolkits.mplot3d import proj3d
@@ -45,6 +47,22 @@ PANEL_ORDER = (2, 1, 0)
 # Axial and coronal can show either convention. The L stays on subject left.
 LETTER_AXES = (1, 2)
 SETTLE_MS = 80
+
+# White page. Ink for type, a hairline for controls, plane color only on the
+# slices, the sliders, and the 3D frames.
+CANVAS = "#ffffff"
+INK = "#1a1a1a"
+MUTED = "#6a6a6a"
+FAINT = "#8f8f8f"
+LINE = "#d4d4d4"
+RULE = "#e4e4e4"
+WASH = "#f3f3f3"
+HOVER = "#ececec"
+TRACK = "#e6e6e6"
+FRAME = "#e5e5e5"
+CORNER_IN = 0.09
+_UI_FONT = "Segoe UI"
+_BEZIER = 0.5522847498307936
 
 
 def _work_area(window):
@@ -107,6 +125,25 @@ def _screen_margin(work_w, work_h):
     return max(40, int(round(work_w * 0.02))), max(40, int(round(work_h * 0.02)))
 
 
+def _white_window(fig):
+    """Match the Tk frame to the white page so no gray shows around it."""
+    manager = getattr(fig.canvas, "manager", None)
+    window = getattr(manager, "window", None)
+    widget = getattr(fig.canvas, "_tkcanvas", None)
+    for target in (window, widget):
+        if target is None:
+            continue
+        try:
+            target.configure(bg=CANVAS)
+        except tkinter.TclError:
+            pass
+    if widget is not None:
+        try:
+            widget.configure(highlightthickness=0, bd=0)
+        except tkinter.TclError:
+            pass
+
+
 def _pixel_ratio(fig, window):
     """Physical pixels per inch of figure size, including display scaling."""
     ratio = getattr(fig.canvas, "device_pixel_ratio", 1.0) or 1.0
@@ -150,6 +187,7 @@ def _apply_fit(fig, design, tries=12):
     """Fit the designed figure inside the work area once the window is mapped."""
     window = fig.canvas.manager.window
     widget = fig.canvas._tkcanvas
+    _white_window(fig)
     window.update_idletasks()
     px_per_in = _pixel_ratio(fig, window)
     design_w, design_h = design
@@ -201,6 +239,7 @@ def _fit_window(fig):
     if window is None or widget is None:
         return
     design = tuple(float(size) for size in fig.get_size_inches())
+    _white_window(fig)
 
     def place(_event):
         widget.unbind("<Map>", token)
@@ -548,6 +587,173 @@ def _is_nifti(path):
     return path.is_file() and (name.endswith(".nii") or name.endswith(".nii.gz"))
 
 
+def _use_ui_type():
+    """Segoe UI on Windows, then Calibri, then Arial."""
+    global _UI_FONT
+    have = {font.name for font in font_manager.fontManager.ttflist}
+    for name in ("Segoe UI", "Calibri", "Arial"):
+        if name in have:
+            _UI_FONT = name
+            break
+    else:
+        _UI_FONT = "sans-serif"
+    plt.rcParams.update({
+        "font.family": _UI_FONT,
+        "font.size": 10,
+        "text.color": INK,
+        "axes.labelcolor": MUTED,
+        "axes.edgecolor": LINE,
+        "axes.linewidth": 0.8,
+        "xtick.color": FAINT,
+        "ytick.color": FAINT,
+        "figure.facecolor": CANVAS,
+        "savefig.facecolor": CANVAS,
+        "axes.facecolor": CANVAS,
+        "axes3d.xaxis.panecolor": (1, 1, 1, 0),
+        "axes3d.yaxis.panecolor": (1, 1, 1, 0),
+        "axes3d.zaxis.panecolor": (1, 1, 1, 0),
+        "text.antialiased": True,
+    })
+
+
+def _font(size, weight=400):
+    return font_manager.FontProperties(family=_UI_FONT, size=size, weight=weight)
+
+
+def _rounded_rect_path(
+    x0, y0, x1, y1, rx, ry, *,
+    round_tl=True, round_tr=True, round_br=True, round_bl=True,
+):
+    """Rounded rectangle in the caller's coordinate system. Radii are clamped."""
+    rx = min(abs(rx), (x1 - x0) / 2)
+    ry = min(abs(ry), (y1 - y0) / 2)
+    k = _BEZIER
+    rtlx, rtly = (rx, ry) if round_tl else (0.0, 0.0)
+    rtrx, rtry = (rx, ry) if round_tr else (0.0, 0.0)
+    rbrx, rbry = (rx, ry) if round_br else (0.0, 0.0)
+    rblx, rbly = (rx, ry) if round_bl else (0.0, 0.0)
+    verts = []
+    codes = []
+
+    def move(x, y):
+        verts.append((x, y))
+        codes.append(MPath.MOVETO)
+
+    def line(x, y):
+        verts.append((x, y))
+        codes.append(MPath.LINETO)
+
+    def curve(c1x, c1y, c2x, c2y, x, y):
+        verts.extend(((c1x, c1y), (c2x, c2y), (x, y)))
+        codes.extend((MPath.CURVE4, MPath.CURVE4, MPath.CURVE4))
+
+    move(x0 + rblx, y0)
+    line(x1 - rbrx, y0)
+    if round_br:
+        curve(
+            x1 - rbrx + k * rbrx, y0,
+            x1, y0 + rbry - k * rbry,
+            x1, y0 + rbry,
+        )
+    else:
+        line(x1, y0)
+    line(x1, y1 - rtry)
+    if round_tr:
+        curve(
+            x1, y1 - rtry + k * rtry,
+            x1 - rtrx + k * rtrx, y1,
+            x1 - rtrx, y1,
+        )
+    else:
+        line(x1, y1)
+    line(x0 + rtlx, y1)
+    if round_tl:
+        curve(
+            x0 + rtlx - k * rtlx, y1,
+            x0, y1 - rtly + k * rtly,
+            x0, y1 - rtly,
+        )
+    else:
+        line(x0, y1)
+    line(x0, y0 + rbly)
+    if round_bl:
+        curve(
+            x0, y0 + rbly - k * rbly,
+            x0 + rblx - k * rblx, y0,
+            x0 + rblx, y0,
+        )
+    else:
+        line(x0, y0)
+    verts.append((0.0, 0.0))
+    codes.append(MPath.CLOSEPOLY)
+    return MPath(verts, codes)
+
+
+def _axes_radii(ax, radius_in):
+    """Corner radius as a fraction of the axes width and height."""
+    fig = ax.figure
+    fw, fh = fig.get_size_inches()
+    box = ax.get_position()
+    width_in = max(box.width * fw, 1e-6)
+    height_in = max(box.height * fh, 1e-6)
+    return min(radius_in / width_in, 0.49), min(radius_in / height_in, 0.49)
+
+
+def _figure_round_path(fig, x, y, w, h, radius_in, *, top=True, bottom=True):
+    fw, fh = fig.get_size_inches()
+    return _rounded_rect_path(
+        x, y, x + w, y + h,
+        radius_in / fw, radius_in / fh,
+        round_tl=top, round_tr=top, round_br=bottom, round_bl=bottom,
+    )
+
+
+def _row_check(ax, index, count):
+    """Small check at the right of a menu row. Drawn, not a glyph."""
+    cy = 1 - (index + 0.5) / max(count, 1)
+    box = ax.get_position()
+    fw, fh = ax.figure.get_size_inches()
+    size = 0.072
+    sx = size / max(box.width * fw, 1e-6)
+    sy = size / max(box.height * fh, 1e-6)
+    cx = 0.955
+    line = Line2D(
+        [cx - 0.40 * sx, cx - 0.08 * sx, cx + 0.46 * sx],
+        [cy - 0.02 * sy, cy - 0.36 * sy, cy + 0.40 * sy],
+        transform=ax.transAxes,
+        color=INK, linewidth=1.2,
+        solid_capstyle="round", solid_joinstyle="round",
+        clip_on=False, zorder=5,
+    )
+    ax.add_line(line)
+
+
+def _style_slider(slider, color):
+    """Thin track, white knob. The axes stays invisible around the rail."""
+    slider.ax.set_facecolor("none")
+    slider.track.set_y(0.36)
+    slider.track.set_height(0.28)
+    slider.track.set_facecolor(TRACK)
+    slider.track.set_edgecolor("none")
+    slider.track.set_zorder(2)
+    slider.poly.set_y(0.36)
+    slider.poly.set_height(0.28)
+    slider.poly.set_facecolor(color)
+    slider.poly.set_edgecolor("none")
+    slider.poly.set_linewidth(0)
+    slider.poly.set_zorder(3)
+    slider.vline.set_visible(False)
+    slider._handle.set_markerfacecolor(CANVAS)
+    slider._handle.set_markeredgecolor(INK)
+    slider._handle.set_markeredgewidth(1.05)
+    slider._handle.set_markersize(10)
+    slider._handle.set_zorder(5)
+    slider.label.set_fontproperties(_font(9))
+    slider.label.set_color(INK)
+    slider.valtext.set_fontproperties(_font(9))
+    slider.valtext.set_color(MUTED)
+
+
 def volume_choices(current):
     """NIfTI files next to this script, with the open file included."""
     current = Path(current).resolve()
@@ -573,29 +779,43 @@ class _VolumeMenu:
         self._rows = []
         self._hover = None
         self._over_button = False
+        self._stroke = None
+        self._popup_fill = None
         self.ax = fig.add_axes(rect, zorder=7)
         self.ax.set_navigate(False)
+        self.ax.set_autoscale_on(False)
         self.ax.set_xlim(0, 1)
         self.ax.set_ylim(0, 1)
         self.ax.set_xticks([])
         self.ax.set_yticks([])
-        self.ax.set_facecolor("#f6f6f6")
+        self.ax.patch.set_visible(False)
         for spine in self.ax.spines.values():
-            spine.set_color("#b5b5b5")
-            spine.set_linewidth(0.7)
+            spine.set_visible(False)
+        rx, ry = _axes_radii(self.ax, CORNER_IN)
+        self._fill = PathPatch(
+            _rounded_rect_path(0, 0, 1, 1, rx, ry),
+            transform=self.ax.transAxes,
+            facecolor=CANVAS, edgecolor="none",
+            zorder=1, clip_on=False,
+        )
+        self.ax.add_patch(self._fill)
         self.label = self.ax.text(
-            0.03, 0.5, self.current.name,
-            ha="left", va="center", fontsize=9, color="#222222",
-            clip_on=True,
+            0.045, 0.5, self.current.name,
+            ha="left", va="center", color=INK, zorder=3, clip_on=True,
+            fontproperties=_font(9.5),
         )
         self.label.set_clip_path(Rectangle(
-            (0.0, 0.0), 0.90, 1.0, transform=self.ax.transData,
+            (0.0, 0.0), 0.88, 1.0, transform=self.ax.transData,
         ))
-        self._chevron = Polygon(
-            [[0.942, 0.60], [0.978, 0.60], [0.960, 0.36]],
-            closed=True, facecolor="#555555", edgecolor="none",
+        self._chevron, = self.ax.plot(
+            [0.928, 0.948, 0.968], [0.62, 0.38, 0.62],
+            color=MUTED, linewidth=1.15,
+            solid_capstyle="round", solid_joinstyle="round",
+            clip_on=False, zorder=4,
         )
-        self.ax.add_patch(self._chevron)
+        self.ax.set_xlim(0, 1)
+        self.ax.set_ylim(0, 1)
+        self._place_stroke(False)
 
     def set_label(self, text):
         self.label.set_text(text)
@@ -604,69 +824,127 @@ class _VolumeMenu:
         if over == self._over_button:
             return False
         self._over_button = over
-        self.ax.set_facecolor("#eaeaea" if over else "#f6f6f6")
+        if not self.is_open:
+            self._fill.set_facecolor(WASH if over else CANVAS)
         return True
 
     def _point_chevron(self, upward):
         if upward:
-            points = [[0.942, 0.40], [0.978, 0.40], [0.960, 0.64]]
+            self._chevron.set_ydata([0.38, 0.62, 0.38])
         else:
-            points = [[0.942, 0.60], [0.978, 0.60], [0.960, 0.36]]
-        self._chevron.set_xy(points)
+            self._chevron.set_ydata([0.62, 0.38, 0.62])
+
+    def _place_stroke(self, open_menu):
+        if self._stroke is not None:
+            self._stroke.remove()
+            self._stroke = None
+        x, y, width, height = self.rect
+        if open_menu and self.popup is not None:
+            box = self.popup.get_position()
+            path = _figure_round_path(
+                self.fig, x, y, width, box.y0 + box.height - y, CORNER_IN,
+            )
+        else:
+            path = _figure_round_path(self.fig, x, y, width, height, CORNER_IN)
+        self._stroke = PathPatch(
+            path,
+            transform=self.fig.transFigure,
+            facecolor="none", edgecolor=LINE, linewidth=1.0,
+            joinstyle="round", capstyle="round",
+            zorder=20, clip_on=False,
+        )
+        self.fig.add_artist(self._stroke)
+
+    def _button_path(self, open_menu):
+        rx, ry = _axes_radii(self.ax, CORNER_IN)
+        return _rounded_rect_path(
+            0, 0, 1, 1, rx, ry,
+            round_tl=not open_menu, round_tr=not open_menu,
+            round_br=True, round_bl=True,
+        )
 
     def open_menu(self):
         if self.is_open:
             return
         count = len(self.paths)
         x, y, width, height = self.rect
+        fh = self.fig.get_size_inches()[1]
+        # Overlap the button so the two fills meet as one surface.
+        seam = 0.02 / fh
         room = max(height, 0.99 - (y + height))
         row_h = min(height, room / max(count, 1))
         popup_h = row_h * count
-        self.popup = self.fig.add_axes([x, y + height, width, popup_h], zorder=8)
+        self.popup = self.fig.add_axes(
+            [x, y + height - seam, width, popup_h], zorder=8,
+        )
         self.popup.set_navigate(False)
+        self.popup.set_autoscale_on(False)
         self.popup.set_xlim(0, 1)
         self.popup.set_ylim(count, 0)
         self.popup.set_xticks([])
         self.popup.set_yticks([])
-        self.popup.set_facecolor("#ffffff")
+        self.popup.patch.set_visible(False)
         for spine in self.popup.spines.values():
-            spine.set_color("#b5b5b5")
-            spine.set_linewidth(0.7)
-        self.popup.spines["bottom"].set_visible(False)
-        self.ax.spines["top"].set_visible(False)
-        self.ax.set_facecolor("#ffffff")
+            spine.set_visible(False)
+        prx, pry = _axes_radii(self.popup, CORNER_IN)
+        self._popup_fill = PathPatch(
+            _rounded_rect_path(
+                0, 0, 1, 1, prx, pry,
+                round_tl=True, round_tr=True, round_br=False, round_bl=False,
+            ),
+            transform=self.popup.transAxes,
+            facecolor=CANVAS, edgecolor="none",
+            zorder=1, clip_on=False,
+        )
+        self.popup.add_patch(self._popup_fill)
+        join = Line2D(
+            [0, 1], [0, 0], transform=self.popup.transAxes,
+            color=LINE, linewidth=0.8, solid_capstyle="butt",
+            zorder=4, clip_on=False,
+        )
+        self.popup.add_line(join)
+        self._fill.set_path(self._button_path(True))
+        self._fill.set_facecolor(CANVAS)
         self._rows = []
         for index, path in enumerate(self.paths):
             selected = path == self.current
             row = Rectangle(
                 (0, index), 1, 1,
-                facecolor="#e4edf8" if selected else "#ffffff",
-                edgecolor="none",
+                facecolor=WASH if selected else CANVAS,
+                edgecolor="none", zorder=2,
             )
+            row.set_clip_path(self._popup_fill)
             self.popup.add_patch(row)
-            weight = "medium" if selected else "normal"
-            self.popup.text(
-                0.03, index + 0.5, path.name,
-                ha="left", va="center", fontsize=9, color="#1c1c1c",
-                fontweight=weight, clip_on=True, zorder=2,
+            label = self.popup.text(
+                0.045, index + 0.5, path.name,
+                ha="left", va="center", color=INK, clip_on=True, zorder=3,
+                fontproperties=_font(9.5),
             )
+            label.set_clip_path(Rectangle(
+                (0.0, index), 0.90, 1.0, transform=self.popup.transData,
+            ))
+            if selected:
+                _row_check(self.popup, index, count)
             self._rows.append(row)
         self._point_chevron(True)
         self.is_open = True
         self._hover = None
+        self._place_stroke(True)
 
     def close_menu(self):
         if not self.is_open:
             return
         self.popup.remove()
         self.popup = None
+        self._popup_fill = None
         self._rows = []
         self.is_open = False
         self._hover = None
         self._over_button = False
-        self.ax.spines["top"].set_visible(True)
-        self.ax.set_facecolor("#f6f6f6")
+        self._fill.set_path(self._button_path(False))
+        self._fill.set_facecolor(CANVAS)
         self._point_chevron(False)
+        self._place_stroke(False)
 
     def toggle(self):
         if self.is_open:
@@ -689,9 +967,9 @@ class _VolumeMenu:
         for index, patch in enumerate(self._rows):
             selected = self.paths[index] == self.current
             if index == row:
-                patch.set_facecolor("#d3e2f4" if selected else "#f0f0f0")
+                patch.set_facecolor("#e6e6e6" if selected else HOVER)
             else:
-                patch.set_facecolor("#e4edf8" if selected else "#ffffff")
+                patch.set_facecolor(WASH if selected else CANVAS)
         return True
 
 
@@ -709,44 +987,64 @@ class _ConventionToggle:
         self.ax.set_ylim(0, 1)
         self.ax.set_xticks([])
         self.ax.set_yticks([])
-        self.ax.set_facecolor("#f6f6f6")
+        self.ax.patch.set_visible(False)
         self.ax.set_autoscale_on(False)
         for spine in self.ax.spines.values():
-            spine.set_color("#b5b5b5")
-            spine.set_linewidth(0.7)
-        self._faces = []
+            spine.set_visible(False)
+        rx, ry = _axes_radii(self.ax, CORNER_IN)
+        shape = _rounded_rect_path(0, 0, 1, 1, rx, ry)
+        self._bg = PathPatch(
+            shape, transform=self.ax.transAxes,
+            facecolor=CANVAS, edgecolor="none",
+            zorder=1, clip_on=False,
+        )
+        self._border = PathPatch(
+            shape, transform=self.ax.transAxes,
+            facecolor="none", edgecolor=LINE, linewidth=1.0,
+            joinstyle="round", capstyle="round",
+            zorder=4, clip_on=False,
+        )
+        self.ax.add_patch(self._bg)
+        self._hover_face = Rectangle(
+            (0, 0), 1, 1, facecolor=HOVER, edgecolor="none",
+            zorder=2, visible=False,
+        )
+        self._hover_face.set_clip_path(self._bg)
+        self.ax.add_patch(self._hover_face)
+        self._selected = Rectangle(
+            (1, 0), 1, 1, facecolor=INK, edgecolor="none", zorder=3,
+        )
+        self._selected.set_clip_path(self._bg)
+        self.ax.add_patch(self._selected)
+        self.ax.add_patch(self._border)
         self._labels = []
         for index, name in enumerate(self.LABELS):
-            face = Rectangle(
-                (index, 0), 1, 1,
-                facecolor="#f6f6f6", edgecolor="none", zorder=1,
-            )
-            self.ax.add_patch(face)
             label = self.ax.text(
                 index + 0.5, 0.5, name,
-                ha="center", va="center", fontsize=9, color="#1c1c1c",
-                clip_on=True, zorder=2,
+                ha="center", va="center", color=INK,
+                clip_on=False, zorder=5, fontproperties=_font(9.5),
             )
-            self._faces.append(face)
             self._labels.append(label)
-        self._divider = self.ax.plot(
-            [1, 1], [0, 1], color="#b5b5b5", lw=0.7,
-            solid_capstyle="butt", zorder=3, clip_on=True,
-        )[0]
+        self.ax.set_xlim(0, 2)
+        self.ax.set_ylim(0, 1)
         self._paint()
 
     def _paint(self):
-        for index, (face, label) in enumerate(zip(self._faces, self._labels)):
-            selected = (index == 1) == self.radiological
-            if selected and index == self._hover:
-                face.set_facecolor("#d3e2f4")
-            elif selected:
-                face.set_facecolor("#e4edf8")
-            elif index == self._hover:
-                face.set_facecolor("#eaeaea")
-            else:
-                face.set_facecolor("#f6f6f6")
-            label.set_fontweight("medium" if selected else "normal")
+        self._selected.set_x(1 if self.radiological else 0)
+        hovered = self._hover
+        selected_index = 1 if self.radiological else 0
+        if hovered is None or hovered == selected_index:
+            self._hover_face.set_visible(False)
+        else:
+            self._hover_face.set_visible(True)
+            self._hover_face.set_x(hovered)
+            self._hover_face.set_facecolor(HOVER)
+        if hovered == selected_index:
+            self._selected.set_facecolor("#2a2a2a")
+        else:
+            self._selected.set_facecolor(INK)
+        for index, label in enumerate(self._labels):
+            label.set_color(CANVAS if index == selected_index else INK)
 
     def side_at(self, event):
         if event.inaxes is not self.ax or event.xdata is None:
@@ -770,6 +1068,7 @@ class _ConventionToggle:
 
 
 def draw(path):
+    _use_ui_type()
     path = Path(path).resolve()
     data, affine = load(path)
     lo, hi, fade, solid = display_levels(data)
@@ -788,8 +1087,10 @@ def draw(path):
     }
 
     fig = plt.figure(figsize=(11.6, 11.2))
+    fig.patch.set_facecolor(CANVAS)
     fig_w, fig_h = fig.get_size_inches()
     _fit_window(fig)
+    _white_window(fig)
     # Equal cells in a cluster, with room outside the group. Left-column
     # views sit on the gutter; right-column views do the same.
     margin_x = 1.15
@@ -798,6 +1099,30 @@ def draw(path):
     gap = 0.42
     cell_w = (fig_w - 2 * margin_x - gap) / 2
     cell_h = (fig_h - margin_top - margin_bottom - gap) / 2
+    rule_gap = 0.10
+    rule_y = 1 - (margin_top - rule_gap) / fig_h
+    fig.add_artist(Line2D(
+        [margin_x / fig_w, 1 - margin_x / fig_w],
+        [rule_y, rule_y],
+        transform=fig.transFigure,
+        color=RULE, linewidth=0.8, solid_capstyle="butt",
+        zorder=0, clip_on=False,
+    ))
+
+    def set_heading(name):
+        text = fig.suptitle(
+            name,
+            ha="left", va="center", color=INK,
+            x=margin_x / fig_w,
+            y=1 - (margin_top - rule_gap) / 2 / fig_h,
+        )
+        text.set_fontproperties(_font(16))
+        manager = getattr(fig.canvas, "manager", None)
+        if manager is not None:
+            try:
+                manager.set_window_title(name)
+            except (AttributeError, tkinter.TclError):
+                pass
 
     def cell_box(col, row):
         x = margin_x + col * (cell_w + gap)
@@ -841,26 +1166,42 @@ def draw(path):
         ax.set_ylim(geom["n_row"] - 0.5, -0.5)
         x = _display_coord(indices[geom["col_axis"]], geom["n_col"], geom["flip_col"])
         y = _display_coord(indices[geom["row_axis"]], geom["n_row"], geom["flip_row"])
-        v_line = ax.axvline(x, color=PLANES[geom["col_axis"]][2], lw=0.9)
-        h_line = ax.axhline(y, color=PLANES[geom["row_axis"]][2], lw=0.9)
+        v_line = ax.axvline(
+            x, color=PLANES[geom["col_axis"]][2], lw=1.0,
+            solid_capstyle="butt", zorder=3,
+        )
+        h_line = ax.axhline(
+            y, color=PLANES[geom["row_axis"]][2], lw=1.0,
+            solid_capstyle="butt", zorder=3,
+        )
         name, _axis, color = PLANES[axis]
-        ax.set_title(name, fontsize=12, color=color, pad=4)
-        ax.axis("off")
+        ax.set_xticks([])
+        ax.set_yticks([])
         ax.set_navigate(False)
-        mm = ax.text(
-            0.5, 0.975, _position_text(affine, axis, indices[axis]),
+        ax.set_facecolor(CANVAS)
+        for spine in ax.spines.values():
+            spine.set_color(FRAME)
+            spine.set_linewidth(0.8)
+        ax.text(
+            0.0, 1.02, name,
             transform=ax.transAxes,
-            ha="center", va="top",
-            fontsize=10, color=color,
+            ha="left", va="bottom", color=INK,
+            fontproperties=_font(12), clip_on=False, zorder=5,
+        )
+        mm = ax.text(
+            1.0, 1.02, _position_text(affine, axis, indices[axis]),
+            transform=ax.transAxes,
+            ha="right", va="bottom", color=MUTED,
+            fontproperties=_font(9), clip_on=False, zorder=5,
         )
         letter = None
         if axis in LETTER_AXES:
             letter = ax.text(
                 0.965, 0.50, "L",
                 transform=ax.transAxes,
-                ha="right", va="center",
-                fontsize=13, color="white", fontweight="medium",
-                path_effects=[patheffects.withStroke(linewidth=2.4, foreground=(0, 0, 0, 0.7))],
+                ha="right", va="center", color="white",
+                fontproperties=_font(12),
+                path_effects=[patheffects.withStroke(linewidth=2.0, foreground=(0, 0, 0, 0.55))],
                 zorder=4,
             )
             _place_side_letter(letter, state["radiological"])
@@ -911,7 +1252,7 @@ def draw(path):
         outline = _frame(affine, box, axis, indices[axis])
         line, = ax3.plot(
             outline[0], outline[1], outline[2],
-            color=color, linewidth=1.6, solid_capstyle="round", zorder=1000,
+            color=color, linewidth=1.25, solid_capstyle="round", zorder=1000,
         )
         borders.append(line)
 
@@ -926,14 +1267,23 @@ def draw(path):
     ax3.set_proj_type("ortho")
     ax3.view_init(elev=28, azim=40)
     ax3.mouse_init(rotate_btn=[])
-    ax3.set_xlabel("x (mm)", fontsize=8, labelpad=2)
-    ax3.set_ylabel("y (mm)", fontsize=8, labelpad=2)
-    ax3.set_zlabel("z (mm)", fontsize=8, labelpad=2)
-    ax3.tick_params(labelsize=7, pad=0)
+    ax3.set_xlabel("x (mm)", fontsize=8, labelpad=2, color=MUTED, fontname=_UI_FONT)
+    ax3.set_ylabel("y (mm)", fontsize=8, labelpad=2, color=MUTED, fontname=_UI_FONT)
+    ax3.set_zlabel("z (mm)", fontsize=8, labelpad=2, color=MUTED, fontname=_UI_FONT)
+    ax3.tick_params(labelsize=7, pad=2, colors=FAINT)
     ax3.grid(False)
+    ax3.set_facecolor(CANVAS)
     for axis3d in (ax3.xaxis, ax3.yaxis, ax3.zaxis):
+        axis3d.set_major_locator(MaxNLocator(nbins=4, steps=[1, 2, 5, 10], min_n_ticks=2))
+        axis3d.label.set_fontproperties(_font(8))
+        axis3d.label.set_color(MUTED)
+        axis3d.line.set_color(LINE)
+        axis3d.line.set_linewidth(0.8)
         axis3d.pane.fill = False
-        axis3d.pane.set_edgecolor((0, 0, 0, 0))
+        axis3d.pane.set_facecolor((1, 1, 1, 0))
+        axis3d.pane.set_edgecolor((1, 1, 1, 0))
+        axis3d.pane.set_alpha(0)
+        axis3d.offsetText.set_color(FAINT)
 
     sliders = []
     for slot, (name, axis, color) in enumerate(PLANES):
@@ -950,14 +1300,15 @@ def draw(path):
             max(data.shape[axis] - 1, 1),
             valinit=indices[axis],
             valstep=1,
-            color=color,
-            handle_style={"size": 7},
+            initcolor="none",
+            track_color=TRACK,
+            handle_style={"size": 10, "facecolor": CANVAS, "edgecolor": INK, "edgewidth": 1.05},
+            facecolor=color,
+            edgecolor="none",
+            linewidth=0,
         )
         slider.drawon = False
-        slider.label.set_color(color)
-        slider.label.set_fontsize(9)
-        slider.valtext.set_color(color)
-        slider.valtext.set_fontsize(9)
+        _style_slider(slider, color)
         sliders.append(slider)
 
     menu = _VolumeMenu(
@@ -1140,7 +1491,7 @@ def draw(path):
         refresh_2d()
         shown["ready"] = was_ready
         refresh_3d()
-        fig.suptitle(new_path.name, fontsize=13)
+        set_heading(new_path.name)
 
     def pick(new_path):
         new_path = Path(new_path).resolve()
@@ -1259,7 +1610,7 @@ def draw(path):
         slider.valtext.set_text(_position_text(affine, axis, indices[axis]))
     refresh_3d()
     pending["dirty"] = False
-    fig.suptitle(path.name, fontsize=13)
+    set_heading(path.name)
     return fig
 
 
