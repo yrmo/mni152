@@ -17,7 +17,19 @@
 
 View brain slices of the MNI152 dataset with visualization of brain slice planes.
 
-The window opens on the uncommented `PATH` near the top of `mni152.py`. The menu between the 3D view and the sliders switches to any other NIfTI file next to the script. The default is the 0.5 mm ICBM 2009b nonlinear asymmetric template.
+```
+python mni152.py
+```
+
+opens the uncommented `PATH` near the top of `mni152.py`. That default is the 0.5 mm ICBM 2009b nonlinear asymmetric template.
+
+```
+python mni152.py path\to\scan.nii
+```
+
+opens that file instead. The argument can be any `.nii` or `.nii.gz` path, including a volume that is not in this folder. A relative path is taken from the current directory. `python mni152.py -h` prints the same usage.
+
+The menu between the 3D view and the sliders still switches among the NIfTI files next to the script. A file opened from the command line is included in that list when it lives somewhere else.
 
 ![](mni_icbm152_t1_tal_nlin_asym_09b_hires.nii.png)
 

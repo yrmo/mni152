@@ -4,8 +4,12 @@ Four cells: axial, coronal, sagittal, and the 3D planes with their sliders.
 Scroll or drag a panel to move that slice. The sliders do the same.
 A menu between the 3D view and the sliders opens another NIfTI file.
 The control above the 3D view sets neurological or radiological display.
+
+With no arguments the default template opens. Pass a .nii or .nii.gz path
+to open that file instead: python mni152.py volume.nii
 """
 
+import argparse
 from pathlib import Path
 import tkinter
 
@@ -22,8 +26,8 @@ from mpl_toolkits.mplot3d import proj3d
 
 ROOT = Path(__file__).resolve().parent
 
-# Volume opened at startup. The menu under the 3D view lists every
-# NIfTI file next to this script.
+# Volume opened at startup when no file is given on the command line.
+# The menu under the 3D view lists every NIfTI file next to this script.
 # https://niivue.github.io/niivue-demo-images/mni152.nii.gz
 # PATH = ROOT / "mni152.nii"
 # PATH = ROOT / "icbm_avg_152_t1_tal_lin.nii"
@@ -1259,10 +1263,25 @@ def draw(path):
     return fig
 
 
-def main():
-    if not PATH.exists():
-        raise SystemExit(f"missing {PATH}")
-    draw(PATH)
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        description="View orthogonal slices of a NIfTI volume.",
+    )
+    parser.add_argument(
+        "nii",
+        nargs="?",
+        help=(
+            "NIfTI file to open (.nii or .nii.gz). "
+            "Omit it to open the default ICBM 2009b hires template."
+        ),
+    )
+    args = parser.parse_args(argv)
+    path = PATH if args.nii is None else Path(args.nii)
+    if not path.is_file():
+        raise SystemExit(f"missing {path}")
+    if not _is_nifti(path):
+        raise SystemExit(f"not a NIfTI file: {path} (expected .nii or .nii.gz)")
+    draw(path)
     plt.show()
 
 
