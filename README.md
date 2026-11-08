@@ -24,8 +24,6 @@ python mni152.py [-h] [nii]
 - `[nii]` — optional `.nii` or `.nii.gz` path. Defaults to the uncommented `PATH` in `mni152.py`.
 - `[-h]` — show the usage and exit.
 
+**Asymmetry**, in the title bar, starts off. Turning it on colors each slice by the volume minus its left–right mirror after an 8 mm blur. Red means this side is brighter than the voxel across the midline. The line under the file name is left minus right for the hemisphere, the frontal lobe, the occipital lobe, and the lateral fissure. On the ICBM asymmetric T1 the frontal number is negative and the occipital number is positive: a right frontal petalia and a left occipital petalia.
+
 ![](mni152.nii.png)
-
-## mni152-asymmetry.ipynb
-
-Left–right asymmetry of the ICBM 2009c asymmetric T1. A raw mirror subtraction, the same map after a blur (right frontal and left occipital petalia), and a left-versus-right look at the lateral fissure.

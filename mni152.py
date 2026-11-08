@@ -6,6 +6,11 @@ A menu between the 3D view and the sliders opens another NIfTI file.
 The control above the 3D view sets neurological (the default) or radiological display.
 Axial, coronal, and the 3D view follow it. Sagittal stays a view from the right.
 
+Asymmetry starts off. Turning it on colors each slice by the volume minus
+its left–right mirror after an 8 mm blur. Red means this side is brighter.
+The line under the file name is left minus right in the hemisphere, frontal
+lobe, occipital lobe, and lateral fissure.
+
 With no arguments the default template opens. Pass a .nii or .nii.gz path
 to open that file instead: python mni152.py volume.nii
 """
@@ -28,6 +33,7 @@ from matplotlib.ticker import MaxNLocator
 from matplotlib.transforms import Affine2D
 from matplotlib.widgets import Slider
 from mpl_toolkits.mplot3d import proj3d
+from scipy.ndimage import gaussian_filter
 
 ROOT = Path(__file__).resolve().parent
 
@@ -52,6 +58,18 @@ LETTER_AXES = (1, 2)
 # While a slider is held, repaint the 3D planes on this cadence.
 # The 2D panels still repaint on every step.
 PLANE_MS = 16
+# Blur for the left–right map. Wide enough that a petalia reads, narrow
+# enough that the frontal and occipital lobes stay apart.
+SIGMA_MM = 8.0
+OVERLAY_ALPHA = 0.72
+# Left-side boxes in MNI millimetres. The mean of (voxel − its mirror)
+# in each box is left minus right, off the midline.
+ASYMMETRY_REGIONS = (
+    ("Hemisphere", -80.0, -12.0, -105.0, 85.0, -40.0, 75.0),
+    ("Frontal", -60.0, -15.0, 15.0, 70.0, -5.0, 45.0),
+    ("Occipital", -55.0, -12.0, -95.0, -45.0, -5.0, 30.0),
+    ("Lateral fissure", -65.0, -30.0, -45.0, -5.0, 0.0, 25.0),
+)
 
 # White page. Ink for type, a hairline for controls, plane color only on the
 # slices, the sliders, and the 3D frames.
@@ -63,6 +81,8 @@ LINE = "#d4d4d4"
 RULE = "#e4e4e4"
 WASH = "#f3f3f3"
 HOVER = "#ececec"
+WARM = "#b2182b"
+COOL = "#2166ac"
 TRACK = "#e6e6e6"
 FRAME = "#e5e5e5"
 CORNER_IN = 0.09
@@ -230,8 +250,12 @@ def _apply_fit(fig, design, tries=12):
         fig.set_size_inches((design_w * scale, design_h * scale), forward=True)
     # Point size stays put while the figure shrinks. The closed menu stays
     # as wide as the sliders; an open list grows so the names still fit.
+    # The header reflows for the same reason: its type does not shrink.
+    reflow = getattr(fig, "_reflow_header", None)
+    if reflow is not None:
+        reflow()
     menu = getattr(fig, "_volume_menu", None)
-    if menu is not None and menu.fit_width():
+    if (menu is not None and menu.fit_width()) or (reflow is not None and scale < 0.999):
         fig.canvas.draw_idle()
     window.update_idletasks()
     _center_window(window)
@@ -300,6 +324,144 @@ def display_levels(data):
     if not np.isfinite(fade) or not np.isfinite(solid) or solid <= fade:
         fade, solid = lo, lo + 1.0
     return float(lo), float(hi), float(fade), float(solid)
+
+
+def _signed(value):
+    if value is None or not np.isfinite(value):
+        return "—"
+    return f"{value:+.2f}".replace("-", "−")
+
+
+def _lr_partners(affine, length):
+    """Fractional index of the voxel across world x = 0, or None.
+
+    The first voxel axis has to be world x, so the partner shares j and k.
+    """
+    column = affine[:3, 0]
+    norm = float(np.linalg.norm(column))
+    if norm < 1e-6 or abs(float(column[0])) < 0.9 * norm:
+        return None
+    if abs(float(affine[0, 1])) > 1e-3 or abs(float(affine[0, 2])) > 1e-3:
+        return None
+    scale = float(affine[0, 0])
+    if abs(scale) < 1e-6:
+        return None
+    index = np.arange(length, dtype=np.float64)
+    return -index - 2.0 * float(affine[0, 3]) / scale
+
+
+def _sample_axis0(volume, src):
+    """Sample volume along axis 0 at fractional indices."""
+    length = volume.shape[0]
+    valid = (src >= -1e-4) & (src <= length - 1 + 1e-4)
+    usable = np.clip(src, 0.0, length - 1)
+    if np.any(valid) and np.allclose(src[valid], np.rint(src[valid]), atol=1e-3):
+        return volume[np.rint(usable).astype(np.intp)], valid
+    i0 = np.floor(usable).astype(np.intp)
+    i1 = np.minimum(i0 + 1, length - 1)
+    weight = (usable - i0).astype(np.float32)
+    sampled = (1.0 - weight)[:, None, None] * volume[i0] + weight[:, None, None] * volume[i1]
+    return sampled, valid
+
+
+def _world_axes(affine, shape):
+    """World coordinate of each index when the affine is diagonal."""
+    linear = affine[:3, :3]
+    if not np.allclose(linear, np.diag(np.diag(linear)), atol=1e-3):
+        return None
+    return tuple(
+        affine[axis, axis] * np.arange(shape[axis], dtype=np.float64) + affine[axis, 3]
+        for axis in range(3)
+    )
+
+
+def _asymmetry_levels(data):
+    """Head and tissue cuts. Absolute on a 0–100 template, else scaled."""
+    sample = data[::4, ::4, ::4]
+    positive = sample[sample > 0]
+    if positive.size == 0:
+        positive = sample.reshape(-1)
+    high = float(np.percentile(positive, 99))
+    if 80.0 <= high <= 120.0:
+        return 15.0, 40.0
+    return 0.15 * high, 0.40 * high
+
+
+def _region_means(diff, tissue, axes):
+    if axes is None:
+        return [(name, None) for name, *_box in ASYMMETRY_REGIONS]
+    x, y, z = axes
+    means = []
+    for name, x0, x1, y0, y1, z0, z1 in ASYMMETRY_REGIONS:
+        mask = (
+            tissue
+            & (x >= x0)[:, None, None] & (x < x1)[:, None, None]
+            & (y >= y0)[None, :, None] & (y < y1)[None, :, None]
+            & (z >= z0)[None, None, :] & (z < z1)[None, None, :]
+        )
+        count = int(mask.sum())
+        means.append((name, float(diff[mask].mean()) if count >= 50 else None))
+    return means
+
+
+def _petalia_phrase(regions):
+    values = dict(regions)
+    frontal = values.get("Frontal")
+    occipital = values.get("Occipital")
+    if frontal is None or occipital is None:
+        return None
+    if frontal < 0 and occipital > 0:
+        return "Right frontal and left occipital petalia"
+    if frontal > 0 and occipital < 0:
+        return "Left frontal and right occipital petalia"
+    return None
+
+
+def asymmetry(data, affine):
+    """Left–right map after an 8 mm blur, or a note when the grid cannot mirror.
+
+    diff is this voxel minus the voxel at the negated world x. On the left
+    that is left minus right. The overlay is antisymmetric.
+    """
+    partners = _lr_partners(affine, data.shape[0])
+    if partners is None:
+        return {
+            "diff": None,
+            "head": None,
+            "clim": None,
+            "regions": [],
+            "note": "Left–right mirror needs a grid aligned with world x.",
+        }
+    head_level, tissue_level = _asymmetry_levels(data)
+    zooms = np.maximum(np.linalg.norm(affine[:3, :3], axis=0), 1e-3)
+    blur = gaussian_filter(data, SIGMA_MM / zooms)
+    mirrored, valid = _sample_axis0(blur, partners)
+    diff = np.asarray(blur - mirrored, dtype=np.float32)
+    del blur, mirrored
+    head = gaussian_filter((data > head_level).astype(np.float32), 1.0) > 0.5
+    if not np.all(valid):
+        missing = np.where(~valid)[0]
+        diff[missing] = 0
+        head[missing] = False
+    if int(head.sum()) < 10:
+        return {
+            "diff": None,
+            "head": None,
+            "clim": None,
+            "regions": [],
+            "note": "No tissue to compare across the midline.",
+        }
+    clim = float(np.percentile(np.abs(diff[head]), 98))
+    if not np.isfinite(clim) or clim <= 0:
+        clim = 1.0
+    tissue = data > tissue_level
+    return {
+        "diff": diff,
+        "head": head,
+        "clim": clim,
+        "regions": _region_means(diff, tissue, _world_axes(affine, data.shape)),
+        "note": None,
+    }
 
 
 def index_at_world_zero(affine, shape):
@@ -641,11 +803,11 @@ def _font(size, weight=400):
     return font_manager.FontProperties(family=_UI_FONT, size=size, weight=weight)
 
 
-def _text_width_in(text, size):
+def _text_width_in(text, size, weight=400):
     """Width of text in inches."""
     if not text:
         return 0.0
-    return TextPath((0, 0), text, prop=_font(size)).get_extents().width / 72.0
+    return TextPath((0, 0), text, prop=_font(size, weight)).get_extents().width / 72.0
 
 
 def _ellipsize(text, max_in, size):
@@ -1224,6 +1386,99 @@ class _ConventionToggle:
         return True
 
 
+class _AsymmetryToggle:
+    """Pill in the title band. On paints the left–right map over the slices."""
+
+    LABEL = "Asymmetry"
+
+    def __init__(self, fig, on=False):
+        self.on = bool(on)
+        self.available = True
+        self._hover = False
+        self.ax = fig.add_axes([0.0, 0.0, 0.08, 0.03], zorder=6)
+        self.ax.set_navigate(False)
+        self.ax.set_xlim(0, 1)
+        self.ax.set_ylim(0, 1)
+        self.ax.set_xticks([])
+        self.ax.set_yticks([])
+        self.ax.patch.set_visible(False)
+        self.ax.set_autoscale_on(False)
+        for spine in self.ax.spines.values():
+            spine.set_visible(False)
+        self._fill = PathPatch(
+            _rounded_rect_path(0, 0, 1, 1, 0.2, 0.2),
+            transform=self.ax.transAxes,
+            facecolor=INK, edgecolor="none",
+            zorder=1, clip_on=False,
+        )
+        self._border = PathPatch(
+            _rounded_rect_path(0, 0, 1, 1, 0.2, 0.2),
+            transform=self.ax.transAxes,
+            facecolor="none", edgecolor=LINE, linewidth=1.0,
+            joinstyle="round", capstyle="round",
+            zorder=4, clip_on=False,
+        )
+        self.ax.add_patch(self._fill)
+        self.ax.add_patch(self._border)
+        self._label = self.ax.text(
+            0.5, 0.5, self.LABEL,
+            ha="center", va="center", color=CANVAS,
+            clip_on=False, zorder=5, fontproperties=_font(9.5),
+        )
+        self._paint()
+
+    def place(self, rect):
+        self.ax.set_position(rect)
+        self.ax.set_xlim(0, 1)
+        self.ax.set_ylim(0, 1)
+        rx, ry = _axes_radii(self.ax, CORNER_IN)
+        shape = _rounded_rect_path(0, 0, 1, 1, rx, ry)
+        self._fill.set_path(shape)
+        self._border.set_path(shape)
+
+    def set_available(self, available):
+        available = bool(available)
+        if available == self.available:
+            return
+        self.available = available
+        self._hover = False
+        self.ax.set_visible(available)
+        self._paint()
+
+    def _paint(self):
+        if not self.available:
+            return
+        active = self.on
+        if active and self._hover:
+            self._fill.set_facecolor("#2a2a2a")
+        elif active:
+            self._fill.set_facecolor(INK)
+        elif self._hover:
+            self._fill.set_facecolor(WASH)
+        else:
+            self._fill.set_facecolor(CANVAS)
+        self._border.set_edgecolor(INK if active else LINE)
+        self._label.set_color(CANVAS if active else INK)
+
+    def hit(self, event):
+        return self.available and event.inaxes is self.ax
+
+    def hover(self, over):
+        over = bool(over) and self.available
+        if over == self._hover:
+            return False
+        self._hover = over
+        self._paint()
+        return True
+
+    def toggle(self):
+        if not self.available:
+            return False
+        self.on = not self.on
+        self._paint()
+        return True
+
+
 def draw(path):
     _use_ui_type()
     path = Path(path).resolve()
@@ -1241,22 +1496,33 @@ def draw(path):
         "solid": solid,
         "box": box,
         "radiological": False,
+        "show_asym": False,
+        "asym": asymmetry(data, affine),
     }
 
     fig = plt.figure(figsize=(11.6, 11.2))
     fig.patch.set_facecolor(CANVAS)
-    fig_w, fig_h = fig.get_size_inches()
+    # Layout fractions stay on these inches. The window may shrink later;
+    # point size does not, so the header reflows against that scale.
+    design_w, design_h = fig.get_size_inches()
+    fig_w, fig_h = design_w, design_h
     _fit_window(fig)
     _white_window(fig)
     # Equal cells in a cluster, with room outside the group. Left-column
     # views sit on the gutter; right-column views do the same.
+    # The top band holds the file name, the asymmetry numbers, and one
+    # line that says what the colors mean. The inches are the design
+    # figure; the window fit scales them down, and the type does not.
     margin_x = 1.15
-    margin_top = 0.56
+    margin_top = 1.50
     margin_bottom = 0.30
     gap = 0.42
+    title_from_top = 0.32
+    stats_from_top = 0.72
+    note_from_top = 1.06
     cell_w = (fig_w - 2 * margin_x - gap) / 2
     cell_h = (fig_h - margin_top - margin_bottom - gap) / 2
-    rule_gap = 0.10
+    rule_gap = 0.18
     rule_y = 1 - (margin_top - rule_gap) / fig_h
     fig.add_artist(Line2D(
         [margin_x / fig_w, 1 - margin_x / fig_w],
@@ -1266,12 +1532,19 @@ def draw(path):
         zorder=0, clip_on=False,
     ))
 
+    def header_scale():
+        return fig.get_size_inches()[0] / design_w
+
     def set_heading(name):
+        scale = header_scale()
+        room = (design_w - 2 * margin_x) * scale - 0.16
+        if asym_toggle.available:
+            room -= _text_width_in(asym_toggle.LABEL, 9.5) + 0.48
         text = fig.suptitle(
-            name,
+            _ellipsize(name, max(room, 0.4), 16),
             ha="left", va="center", color=INK,
             x=margin_x / fig_w,
-            y=1 - (margin_top - rule_gap) / 2 / fig_h,
+            y=1 - title_from_top / fig_h,
         )
         text.set_fontproperties(_font(16))
         manager = getattr(fig.canvas, "manager", None)
@@ -1319,6 +1592,12 @@ def draw(path):
             vmax=hi,
             interpolation="nearest",
         )
+        overlay = ax.imshow(
+            np.zeros((geom["n_row"], geom["n_col"], 4)),
+            interpolation="nearest",
+            zorder=2,
+        )
+        overlay.set_visible(False)
         ax.set_xlim(-0.5, geom["n_col"] - 0.5)
         ax.set_ylim(geom["n_row"] - 0.5, -0.5)
         x = _display_coord(indices[geom["col_axis"]], geom["n_col"], geom["flip_col"])
@@ -1365,6 +1644,7 @@ def draw(path):
         panels.append({
             "axis": axis,
             "artist": artist,
+            "overlay": overlay,
             "v_line": v_line,
             "h_line": h_line,
             "axes": ax,
@@ -1494,6 +1774,103 @@ def draw(path):
         ],
         radiological=state["radiological"],
     )
+    asym_toggle = _AsymmetryToggle(fig, on=state["show_asym"])
+    header_artists = []
+
+    def _header_text(x_in, y_in, text, color, size=9.5, weight=400):
+        artist = fig.text(
+            x_in / design_w,
+            1 - y_in / design_h,
+            text,
+            ha="left", va="center", color=color,
+            fontproperties=_font(size, weight),
+            zorder=5, clip_on=False,
+        )
+        header_artists.append(artist)
+        return artist
+
+    def _drop_header():
+        for artist in header_artists:
+            artist.remove()
+        header_artists.clear()
+
+    def _design_span(actual_in):
+        # Glyphs stay a fixed inch width when the window shrinks, so a
+        # span measured in type has to be stored in design inches.
+        return actual_in / max(header_scale(), 0.35)
+
+    def place_asym_toggle():
+        scale = max(header_scale(), 0.35)
+        actual_w = _text_width_in(asym_toggle.LABEL, 9.5) + 0.36
+        actual_h = 0.26
+        frac_w = (actual_w / scale) / design_w
+        frac_h = (actual_h / scale) / design_h
+        x = (design_w - margin_x) / design_w - frac_w
+        y = (1 - title_from_top / design_h) - frac_h / 2
+        asym_toggle.place([x, y, frac_w, frac_h])
+
+    def show_readout():
+        _drop_header()
+        info = state["asym"]
+        size = 9.5
+        budget = (design_w - 2 * margin_x) * max(header_scale(), 0.35)
+        if info["diff"] is None:
+            asym_toggle.set_available(False)
+            note = info["note"] or ""
+            _header_text(
+                margin_x, stats_from_top,
+                _ellipsize(note, budget, size), MUTED, size,
+            )
+            return
+        asym_toggle.set_available(True)
+        place_asym_toggle()
+        x = margin_x
+        gap = 0.22
+        prefix = f"{SIGMA_MM:.0f} mm"
+        _header_text(x, stats_from_top, prefix, MUTED, size)
+        x += _design_span(_text_width_in(prefix, size) + gap)
+        for name, value in info["regions"]:
+            value_text = _signed(value)
+            if value is None:
+                color = MUTED
+            elif value > 0:
+                color = WARM
+            elif value < 0:
+                color = COOL
+            else:
+                color = INK
+            name_w = _text_width_in(name, size)
+            value_w = _text_width_in(value_text, size, 600)
+            _header_text(x, stats_from_top, name, MUTED, size)
+            _header_text(
+                x + _design_span(name_w + 0.07),
+                stats_from_top, value_text, color, size, 600,
+            )
+            x += _design_span(name_w + 0.07 + value_w + gap)
+        phrase = _petalia_phrase(info["regions"])
+        lead, rest = "Red", "means this side is brighter"
+        lead_w = _text_width_in(lead, size, 600)
+        rest_w = _text_width_in(rest, size)
+        legend_w = (lead_w + 0.08 + rest_w) if state["show_asym"] else 0.0
+        phrase_w = _text_width_in(phrase, size) if phrase else 0.0
+        if phrase and phrase_w + 0.30 + legend_w <= budget:
+            _header_text(margin_x, note_from_top, phrase, MUTED, size)
+        elif phrase and legend_w == 0.0:
+            _header_text(
+                margin_x, note_from_top,
+                _ellipsize(phrase, budget, size), MUTED, size,
+            )
+        if state["show_asym"]:
+            legend_x = design_w - margin_x - _design_span(legend_w)
+            _header_text(legend_x, note_from_top, lead, WARM, size, 600)
+            _header_text(
+                legend_x + _design_span(lead_w + 0.08),
+                note_from_top, rest, MUTED, size,
+            )
+
+    def reflow_header():
+        show_readout()
+        set_heading(state["path"].name)
 
     shown = {"ready": False}
     readout = {}
@@ -1538,6 +1915,26 @@ def draw(path):
                 mid + height / 2.0,
             )
 
+    warm = plt.get_cmap("coolwarm")
+
+    def paint_overlay(panel, index):
+        info = state["asym"]
+        artist = panel["overlay"]
+        if info["diff"] is None or not state["show_asym"]:
+            artist.set_visible(False)
+            return
+        shown = _present(info["diff"], panel["axis"], index, panel)
+        mask = _present(info["head"], panel["axis"], index, panel)
+        clim = info["clim"]
+        # Full color by a quarter of the scale. Near zero stays clear so
+        # the anatomy is not fogged where the two sides match.
+        strength = np.clip(np.abs(shown) / (0.25 * clim), 0.0, 1.0)
+        rgba = warm((np.clip(shown / clim, -1.0, 1.0) + 1.0) * 0.5)
+        rgba = np.asarray(rgba, dtype=np.float32)
+        rgba[..., 3] = np.where(mask, OVERLAY_ALPHA * strength, 0.0)
+        artist.set_data(rgba)
+        artist.set_visible(True)
+
     def refresh_2d():
         data = state["data"]
         affine = state["affine"]
@@ -1545,6 +1942,7 @@ def draw(path):
         for panel in panels:
             axis = panel["axis"]
             panel["artist"].set_data(_present(data, axis, current[axis], panel))
+            paint_overlay(panel, current[axis])
             x = _display_coord(current[panel["col_axis"]], panel["n_col"], panel["flip_col"])
             y = _display_coord(current[panel["row_axis"]], panel["n_row"], panel["flip_row"])
             panel["v_line"].set_xdata([x, x])
@@ -1669,6 +2067,7 @@ def draw(path):
         panel["axes"].set_position(panel_rect(geom["n_col"], geom["n_row"], panel["col"], panel["row"]))
         panel["artist"].set_data(_present(data, panel["axis"], index, geom))
         panel["artist"].set_extent((-0.5, geom["n_col"] - 0.5, geom["n_row"] - 0.5, -0.5))
+        panel["overlay"].set_extent((-0.5, geom["n_col"] - 0.5, geom["n_row"] - 0.5, -0.5))
         panel["axes"].set_xlim(-0.5, geom["n_col"] - 0.5)
         panel["axes"].set_ylim(geom["n_row"] - 0.5, -0.5)
         panel["v_line"].set_color(PLANES[geom["col_axis"]][2])
@@ -1698,6 +2097,7 @@ def draw(path):
             fade=fade,
             solid=solid,
             box=tissue_box(data, solid),
+            asym=asymmetry(data, affine),
         )
         for panel in panels:
             sync_panel(panel, origin[panel["axis"]])
@@ -1726,10 +2126,10 @@ def draw(path):
         timer.stop()
         was_ready = shown["ready"]
         shown["ready"] = False
+        reflow_header()
         refresh_2d()
         refresh_3d()
         shown["ready"] = was_ready
-        set_heading(new_path.name)
 
     def pick(new_path):
         new_path = Path(new_path).resolve()
@@ -1765,6 +2165,20 @@ def draw(path):
         set_plane(panel["axis"], int(sliders[panel["axis"]].val) + step)
 
     def on_press(event):
+        if event.button == 1 and asym_toggle.hit(event):
+            closed = menu.is_open
+            if closed:
+                menu.close_menu()
+            if asym_toggle.toggle():
+                state["show_asym"] = asym_toggle.on
+                reflow_header()
+                was_ready = shown["ready"]
+                shown["ready"] = False
+                refresh_2d()
+                shown["ready"] = was_ready
+            elif closed:
+                fig.canvas.draw_idle()
+            return
         if event.button == 1 and event.inaxes is convention.ax:
             closed = menu.is_open
             if closed:
@@ -1808,6 +2222,8 @@ def draw(path):
             changed = True
         if convention.hover(convention.side_at(event)):
             changed = True
+        if asym_toggle.hover(asym_toggle.hit(event)):
+            changed = True
         if changed and drag["axis"] is None:
             fig.canvas.draw_idle()
         axis = drag["axis"]
@@ -1843,18 +2259,22 @@ def draw(path):
     fig._slice_sliders = sliders
     fig._volume_menu = menu
     fig._convention_toggle = convention
+    fig._asymmetry_toggle = asym_toggle
+    fig._reflow_header = reflow_header
 
     for slider, (_name, axis, _color) in zip(sliders, PLANES):
         slider.valtext.set_text(_position_text(affine, axis, indices[axis]))
+    for panel in panels:
+        paint_overlay(panel, indices[panel["axis"]])
+    reflow_header()
     refresh_3d()
     pending["dirty"] = False
-    set_heading(path.name)
     return fig
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="View orthogonal slices of a NIfTI volume.",
+        description="View orthogonal slices of a NIfTI volume, with a left–right asymmetry map.",
     )
     parser.add_argument(
         "nii",
