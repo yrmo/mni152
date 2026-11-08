@@ -36,7 +36,7 @@ PLANES = (
     ("Axial", 2, "#3a6fbe"),
 )
 PANEL_ORDER = (2, 1, 0)
-# Image left on these panels is subject left.
+# Axial and coronal put subject right on the image left. The L is subject left.
 LETTER_AXES = (1, 2)
 SETTLE_MS = 80
 
@@ -300,6 +300,59 @@ def _crosshair_geometry(shape, axis):
     return u_axis, v_axis, shape[u_axis], shape[v_axis]
 
 
+def _screen_dirs(axis):
+    """World direction of screen-right and screen-up for one slice panel."""
+    if axis == 0:
+        return (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)
+    if axis == 1:
+        return (-1.0, 0.0, 0.0), (0.0, 0.0, 1.0)
+    return (-1.0, 0.0, 0.0), (0.0, 1.0, 0.0)
+
+
+def _display_geometry(affine, shape, axis):
+    """Which voxel axis runs across and down the panel, and whether it is flipped."""
+    u_axis, v_axis = [a for a in range(3) if a != axis]
+    right, up = _screen_dirs(axis)
+    du = affine[:3, u_axis]
+    dv = affine[:3, v_axis]
+    u_right = float(np.dot(du, right))
+    u_up = float(np.dot(du, up))
+    v_right = float(np.dot(dv, right))
+    v_up = float(np.dot(dv, up))
+    if abs(u_right) + abs(v_up) >= abs(v_right) + abs(u_up):
+        col_axis, row_axis = u_axis, v_axis
+        flip_col = u_right < 0
+        flip_row = v_up > 0
+    else:
+        col_axis, row_axis = v_axis, u_axis
+        flip_col = v_right < 0
+        flip_row = u_up > 0
+    return {
+        "col_axis": col_axis,
+        "row_axis": row_axis,
+        "flip_col": flip_col,
+        "flip_row": flip_row,
+        "n_col": int(shape[col_axis]),
+        "n_row": int(shape[row_axis]),
+    }
+
+
+def _present(data, axis, index, geom):
+    """Slice turned so the panel's screen axes match _screen_dirs."""
+    image = _slice(data, axis, index)
+    u_axis = [a for a in range(3) if a != axis][0]
+    shown = image.T if geom["col_axis"] == u_axis else image
+    if geom["flip_col"]:
+        shown = np.fliplr(shown)
+    if geom["flip_row"]:
+        shown = np.flipud(shown)
+    return shown
+
+
+def _display_coord(index, length, flipped):
+    return (length - 1 - index) if flipped else index
+
+
 def _position_text(affine, axis, index):
     mm = _axis_mm(affine, axis, index)
     if mm is None:
@@ -495,10 +548,9 @@ def draw(path):
     panels = []
     title_in = 0.36
 
-    def panel_rect(shape, axis, col, row):
+    def panel_rect(n_col, n_row, col, row):
         px, py = cell_box(col, row)
-        _u_axis, _v_axis, n_u, n_v = _crosshair_geometry(shape, axis)
-        aspect = n_u / max(n_v, 1)
+        aspect = n_col / max(n_row, 1)
         avail_w = cell_w
         avail_h = cell_h - title_in
         if avail_w / max(avail_h, 0.1) > aspect:
@@ -517,21 +569,21 @@ def draw(path):
         ]
 
     for axis, (col, row) in zip(PANEL_ORDER, ((0, 0), (1, 0), (0, 1))):
-        ax = fig.add_axes(panel_rect(data.shape, axis, col, row))
-        image = _slice(data, axis, indices[axis])
-        n_u, n_v = image.shape
+        geom = _display_geometry(affine, data.shape, axis)
+        ax = fig.add_axes(panel_rect(geom["n_col"], geom["n_row"], col, row))
         artist = ax.imshow(
-            np.rot90(image),
+            _present(data, axis, indices[axis], geom),
             cmap="gray",
             vmin=lo,
             vmax=hi,
             interpolation="nearest",
         )
-        ax.set_xlim(-0.5, n_u - 0.5)
-        ax.set_ylim(n_v - 0.5, -0.5)
-        u_axis, v_axis, _n_u, _n_v = _crosshair_geometry(data.shape, axis)
-        v_line = ax.axvline(indices[u_axis], color=PLANES[u_axis][2], lw=0.9)
-        h_line = ax.axhline(n_v - 1 - indices[v_axis], color=PLANES[v_axis][2], lw=0.9)
+        ax.set_xlim(-0.5, geom["n_col"] - 0.5)
+        ax.set_ylim(geom["n_row"] - 0.5, -0.5)
+        x = _display_coord(indices[geom["col_axis"]], geom["n_col"], geom["flip_col"])
+        y = _display_coord(indices[geom["row_axis"]], geom["n_row"], geom["flip_row"])
+        v_line = ax.axvline(x, color=PLANES[geom["col_axis"]][2], lw=0.9)
+        h_line = ax.axhline(y, color=PLANES[geom["row_axis"]][2], lw=0.9)
         name, _axis, color = PLANES[axis]
         ax.set_title(name, fontsize=12, color=color, pad=4)
         ax.axis("off")
@@ -545,9 +597,9 @@ def draw(path):
         letter = None
         if axis in LETTER_AXES:
             letter = ax.text(
-                0.035, 0.50, "L",
+                0.965, 0.50, "L",
                 transform=ax.transAxes,
-                ha="left", va="center",
+                ha="right", va="center",
                 fontsize=13, color="white", fontweight="medium",
                 path_effects=[patheffects.withStroke(linewidth=2.4, foreground=(0, 0, 0, 0.7))],
                 zorder=4,
@@ -557,14 +609,12 @@ def draw(path):
             "artist": artist,
             "v_line": v_line,
             "h_line": h_line,
-            "u_axis": u_axis,
-            "v_axis": v_axis,
-            "n_v": n_v,
             "axes": ax,
             "mm": mm,
             "letter": letter,
             "col": col,
             "row": row,
+            **geom,
         })
 
     cx, cy = cell_box(1, 1)
@@ -670,9 +720,9 @@ def draw(path):
         current = [int(slider.val) for slider in sliders]
         for panel in panels:
             axis = panel["axis"]
-            panel["artist"].set_data(np.rot90(_slice(data, axis, current[axis])))
-            x = current[panel["u_axis"]]
-            y = panel["n_v"] - 1 - current[panel["v_axis"]]
+            panel["artist"].set_data(_present(data, axis, current[axis], panel))
+            x = _display_coord(current[panel["col_axis"]], panel["n_col"], panel["flip_col"])
+            y = _display_coord(current[panel["row_axis"]], panel["n_row"], panel["flip_row"])
             panel["v_line"].set_xdata([x, x])
             panel["h_line"].set_ydata([y, y])
             panel["mm"].set_text(_position_text(affine, axis, current[axis]))
@@ -769,15 +819,16 @@ def draw(path):
         )
         for panel in panels:
             axis = panel["axis"]
-            panel["axes"].set_position(panel_rect(data.shape, axis, panel["col"], panel["row"]))
-            image = _slice(data, axis, origin[axis])
-            n_u, n_v = image.shape
-            panel["artist"].set_data(np.rot90(image))
-            panel["artist"].set_extent((-0.5, n_u - 0.5, n_v - 0.5, -0.5))
+            geom = _display_geometry(affine, data.shape, axis)
+            panel.update(geom)
+            panel["axes"].set_position(panel_rect(geom["n_col"], geom["n_row"], panel["col"], panel["row"]))
+            panel["artist"].set_data(_present(data, axis, origin[axis], geom))
+            panel["artist"].set_extent((-0.5, geom["n_col"] - 0.5, geom["n_row"] - 0.5, -0.5))
             panel["artist"].set_clim(lo, hi)
-            panel["axes"].set_xlim(-0.5, n_u - 0.5)
-            panel["axes"].set_ylim(n_v - 0.5, -0.5)
-            panel["n_v"] = n_v
+            panel["axes"].set_xlim(-0.5, geom["n_col"] - 0.5)
+            panel["axes"].set_ylim(geom["n_row"] - 0.5, -0.5)
+            panel["v_line"].set_color(PLANES[geom["col_axis"]][2])
+            panel["h_line"].set_color(PLANES[geom["row_axis"]][2])
         low, high = volume_bounds(affine, data.shape)
         span = np.maximum(high - low, 1.0)
         pad = span * 0.03
