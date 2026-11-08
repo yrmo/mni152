@@ -3,7 +3,7 @@
 Four cells: axial, coronal, sagittal, and the 3D planes with their sliders.
 Scroll or drag a panel to move that slice. The sliders do the same.
 A menu between the 3D view and the sliders opens another NIfTI file.
-The control above the 3D view sets neurological or radiological display.
+The control above the 3D view sets neurological (the default) or radiological display.
 
 With no arguments the default template opens. Pass a .nii or .nii.gz path
 to open that file instead: python mni152.py volume.nii
@@ -22,6 +22,7 @@ from matplotlib.image import _resample
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch, PathPatch, Rectangle
 from matplotlib.path import Path as MPath
+from matplotlib.textpath import TextPath
 from matplotlib.ticker import MaxNLocator
 from matplotlib.transforms import Affine2D
 from matplotlib.widgets import Slider
@@ -226,7 +227,12 @@ def _apply_fit(fig, design, tries=12):
     )
     if scale < 0.999:
         fig.set_size_inches((design_w * scale, design_h * scale), forward=True)
-        window.update_idletasks()
+    # Point size stays put while the figure shrinks. The closed menu stays
+    # as wide as the sliders; an open list grows so the names still fit.
+    menu = getattr(fig, "_volume_menu", None)
+    if menu is not None and menu.fit_width():
+        fig.canvas.draw_idle()
+    window.update_idletasks()
     _center_window(window)
 
 
@@ -623,6 +629,33 @@ def _font(size, weight=400):
     return font_manager.FontProperties(family=_UI_FONT, size=size, weight=weight)
 
 
+def _text_width_in(text, size):
+    """Width of text in inches."""
+    if not text:
+        return 0.0
+    return TextPath((0, 0), text, prop=_font(size)).get_extents().width / 72.0
+
+
+def _ellipsize(text, max_in, size):
+    """Shorten text with an ellipsis so it fits in max_in inches."""
+    if _text_width_in(text, size) <= max_in + 0.01:
+        return text
+    mark = "…"
+    if _text_width_in(mark, size) > max_in:
+        return mark
+    lo, hi = 0, len(text)
+    best = mark
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        candidate = text[:mid].rstrip() + mark
+        if _text_width_in(candidate, size) <= max_in:
+            best = candidate
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return best
+
+
 def _rounded_rect_path(
     x0, y0, x1, y1, rx, ry, *,
     round_tl=True, round_tr=True, round_br=True, round_bl=True,
@@ -786,16 +819,32 @@ def volume_choices(current):
 
 
 class _VolumeMenu:
-    """Closed filename button. The list opens upward over the 3D view."""
+    """Filename button the same width as the sliders.
+
+    The list opens upward over the 3D view. While it is open the bar grows
+    to the right until each filename fits, then returns to the slider width.
+    """
+
+    _FONT = 9.5
+    _TEXT_X = 0.045
+    _CLIP_RIGHT = 0.88
+    # TextPath runs a little narrow of the rasterizer, and the last glyph
+    # should not sit on the clip.
+    _SLACK_IN = 0.08
+    # Room kept between an open menu's right edge and the figure edge.
+    _EDGE_IN = 0.18
 
     def __init__(self, fig, rect, paths, current):
         self.fig = fig
-        self.rect = rect
+        # Closed width matches the sliders. Opening may replace rect[2].
+        self.closed_rect = list(rect)
+        self.rect = list(rect)
         self.paths = list(paths)
         self.current = Path(current)
         self.is_open = False
         self.popup = None
         self._rows = []
+        self._row_labels = []
         self._hover = None
         self._over_button = False
         self._stroke = None
@@ -819,12 +868,13 @@ class _VolumeMenu:
         )
         self.ax.add_patch(self._fill)
         self.label = self.ax.text(
-            0.045, 0.5, self.current.name,
+            self._TEXT_X, 0.5, "",
             ha="left", va="center", color=INK, zorder=3, clip_on=True,
-            fontproperties=_font(9.5),
+            fontproperties=_font(self._FONT),
         )
+        self.set_label(self.current.name)
         self.label.set_clip_path(Rectangle(
-            (0.0, 0.0), 0.88, 1.0, transform=self.ax.transData,
+            (0.0, 0.0), self._CLIP_RIGHT, 1.0, transform=self.ax.transData,
         ))
         self._chevron, = self.ax.plot(
             [0.928, 0.948, 0.968], [0.62, 0.38, 0.62],
@@ -836,8 +886,77 @@ class _VolumeMenu:
         self.ax.set_ylim(0, 1)
         self._place_stroke(False)
 
+    def _usable_in(self):
+        fig_w = self.fig.get_size_inches()[0]
+        return (self._CLIP_RIGHT - self._TEXT_X) * self.rect[2] * fig_w
+
+    def _fitted_text(self, text):
+        return _ellipsize(text, self._usable_in(), self._FONT)
+
+    def _shows_current_name(self):
+        text = self.label.get_text()
+        name = self.current.name
+        if text == name:
+            return True
+        if not text.endswith("…"):
+            return False
+        return name.startswith(text[:-1].rstrip())
+
     def set_label(self, text):
-        self.label.set_text(text)
+        self.label.set_text(self._fitted_text(text))
+
+    def _open_width(self):
+        """Figure fraction wide enough for every filename, at least the sliders."""
+        fig_w = max(self.fig.get_size_inches()[0], 1e-6)
+        x = self.closed_rect[0]
+        closed_w = self.closed_rect[2]
+        longest = max(
+            (_text_width_in(path.name, self._FONT) for path in self.paths),
+            default=0.0,
+        )
+        usable = self._CLIP_RIGHT - self._TEXT_X
+        needed = (longest + self._SLACK_IN) / usable if usable else 0.0
+        limit = max(closed_w, (1.0 - self._EDGE_IN / fig_w) - x)
+        return min(max(closed_w, needed / fig_w), limit)
+
+    def _set_width(self, new_w):
+        x, y, width, height = self.rect
+        if abs(new_w - width) <= 1e-4:
+            return False
+        self.rect = [x, y, new_w, height]
+        self.ax.set_position(self.rect)
+        self.ax.set_xlim(0, 1)
+        self.ax.set_ylim(0, 1)
+        if self.popup is not None:
+            _px, py, _pw, ph = self.popup.get_position().bounds
+            self.popup.set_position([x, py, new_w, ph])
+            self.popup.set_xlim(0, 1)
+            self.popup.set_ylim(len(self.paths), 0)
+        return True
+
+    def _refit_rows(self):
+        for label, path in zip(self._row_labels, self.paths):
+            label.set_text(self._fitted_text(path.name))
+
+    def fit_width(self):
+        """Keep a closed bar on the slider width.
+
+        An open list grows to the right until the filenames fit.
+        Returns True when the geometry or the closed label changed.
+        """
+        target = self._open_width() if self.is_open else self.closed_rect[2]
+        changed = self._set_width(target)
+        if changed:
+            self._fill.set_path(self._button_path(self.is_open))
+            if self.is_open:
+                self._refit_rows()
+            self._place_stroke(self.is_open)
+        if self._shows_current_name():
+            fitted = self._fitted_text(self.current.name)
+            if fitted != self.label.get_text():
+                self.label.set_text(fitted)
+                changed = True
+        return changed
 
     def hover_button(self, over):
         if over == self._over_button:
@@ -885,6 +1004,8 @@ class _VolumeMenu:
     def open_menu(self):
         if self.is_open:
             return
+        self._set_width(self._open_width())
+        self.set_label(self.current.name)
         count = len(self.paths)
         x, y, width, height = self.rect
         fh = self.fig.get_size_inches()[1]
@@ -925,6 +1046,7 @@ class _VolumeMenu:
         self._fill.set_path(self._button_path(True))
         self._fill.set_facecolor(CANVAS)
         self._rows = []
+        self._row_labels = []
         for index, path in enumerate(self.paths):
             selected = path == self.current
             row = Rectangle(
@@ -935,9 +1057,9 @@ class _VolumeMenu:
             row.set_clip_path(self._popup_fill)
             self.popup.add_patch(row)
             label = self.popup.text(
-                0.045, index + 0.5, path.name,
+                self._TEXT_X, index + 0.5, self._fitted_text(path.name),
                 ha="left", va="center", color=INK, clip_on=True, zorder=3,
-                fontproperties=_font(9.5),
+                fontproperties=_font(self._FONT),
             )
             label.set_clip_path(Rectangle(
                 (0.0, index), 0.90, 1.0, transform=self.popup.transData,
@@ -945,6 +1067,7 @@ class _VolumeMenu:
             if selected:
                 _row_check(self.popup, index, count)
             self._rows.append(row)
+            self._row_labels.append(label)
         self._point_chevron(True)
         self.is_open = True
         self._hover = None
@@ -957,9 +1080,12 @@ class _VolumeMenu:
         self.popup = None
         self._popup_fill = None
         self._rows = []
+        self._row_labels = []
         self.is_open = False
         self._hover = None
         self._over_button = False
+        self._set_width(self.closed_rect[2])
+        self.set_label(self.current.name)
         self._fill.set_path(self._button_path(False))
         self._fill.set_facecolor(CANVAS)
         self._point_chevron(False)
@@ -997,7 +1123,7 @@ class _ConventionToggle:
 
     LABELS = ("Neurological", "Radiological")
 
-    def __init__(self, fig, rect, radiological=True):
+    def __init__(self, fig, rect, radiological=False):
         self.radiological = bool(radiological)
         self._hover = None
         self.ax = fig.add_axes(rect, zorder=6)
@@ -1102,7 +1228,7 @@ def draw(path):
         "fade": fade,
         "solid": solid,
         "box": box,
-        "radiological": True,
+        "radiological": False,
     }
 
     fig = plt.figure(figsize=(11.6, 11.2))
@@ -1240,7 +1366,8 @@ def draw(path):
     cx, cy = cell_box(1, 1)
     # Shorter sliders leave a row for the file menu. The 3D view is a
     # fraction of that leftover square, centered in it, so the planes sit
-    # smaller in the cell and a little above the menu.
+    # smaller in the cell and a little above the menu. The view, the menu,
+    # and the sliders then shift up together.
     slider_h = 0.15
     slider_gap = 0.04
     slider_bottom = 0.02
@@ -1254,7 +1381,8 @@ def draw(path):
     controls_w = min(cell_w - inset - 0.62, plot_top - plot_floor)
     side = controls_w * 0.72
     view_x = cx + inset + (controls_w - side) / 2
-    view_y = plot_floor + (plot_top - plot_floor - side) / 2
+    stack_lift = 0.32
+    view_y = plot_floor + (plot_top - plot_floor - side) / 2 + stack_lift
     ax3 = fig.add_axes([
         view_x / fig_w,
         view_y / fig_h,
@@ -1308,7 +1436,7 @@ def draw(path):
     for slot, (name, axis, color) in enumerate(PLANES):
         ax_s = fig.add_axes([
             (cx + inset) / fig_w,
-            (cy + slider_bottom + (2 - slot) * (slider_h + slider_gap)) / fig_h,
+            (cy + slider_bottom + stack_lift + (2 - slot) * (slider_h + slider_gap)) / fig_h,
             controls_w / fig_w,
             slider_h / fig_h,
         ])
@@ -1334,7 +1462,7 @@ def draw(path):
         fig,
         [
             (cx + inset) / fig_w,
-            (cy + slider_bottom + slider_block + menu_gap) / fig_h,
+            (cy + slider_bottom + slider_block + menu_gap + stack_lift) / fig_h,
             controls_w / fig_w,
             menu_h / fig_h,
         ],
