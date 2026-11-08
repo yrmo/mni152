@@ -4,6 +4,7 @@ Four cells: axial, coronal, sagittal, and the 3D planes with their sliders.
 Scroll or drag a panel to move that slice. The sliders do the same.
 A menu between the 3D view and the sliders opens another NIfTI file.
 The control above the 3D view sets neurological (the default) or radiological display.
+Axial, coronal, and the 3D view follow it. Sagittal stays a view from the right.
 
 With no arguments the default template opens. Pass a .nii or .nii.gz path
 to open that file instead: python mni152.py volume.nii
@@ -570,6 +571,17 @@ def _present(data, axis, index, geom):
 
 def _display_coord(index, length, flipped):
     return (length - 1 - index) if flipped else index
+
+
+def _orient_3d(ax3, radiological):
+    """Mirror world x so screen-left matches the slice convention.
+
+    The camera stays put. Radiological keeps +x toward screen left.
+    Neurological reverses that axis, so subject left is on screen left.
+    """
+    x0, x1 = ax3.get_xlim()
+    lo, hi = (x0, x1) if x0 < x1 else (x1, x0)
+    ax3.set_xlim((lo, hi) if radiological else (hi, lo))
 
 
 def _place_side_letter(letter, radiological):
@@ -1413,6 +1425,7 @@ def draw(path):
     ax3.set_autoscale_on(False)
     ax3.set_proj_type("ortho")
     ax3.view_init(elev=28, azim=40)
+    _orient_3d(ax3, state["radiological"])
     ax3.mouse_init(rotate_btn=[])
     ax3.set_xlabel("x (mm)", fontsize=8, labelpad=2, color=MUTED, fontname=_UI_FONT)
     ax3.set_ylabel("y (mm)", fontsize=8, labelpad=2, color=MUTED, fontname=_UI_FONT)
@@ -1663,12 +1676,14 @@ def draw(path):
         _place_side_letter(panel["letter"], state["radiological"])
 
     def apply_convention():
+        _orient_3d(ax3, state["radiological"])
         current = [int(slider.val) for slider in sliders]
         for panel in panels:
             sync_panel(panel, current[panel["axis"]])
         was_ready = shown["ready"]
         shown["ready"] = False
         refresh_2d()
+        refresh_3d()
         shown["ready"] = was_ready
 
     def apply_volume(data, affine, new_path):
@@ -1694,6 +1709,7 @@ def draw(path):
         ax3.set_ylim(low[1] - pad[1], high[1] + pad[1])
         ax3.set_zlim(low[2] - pad[2], high[2] + pad[2])
         ax3.set_box_aspect(tuple(span), zoom=1.12)
+        _orient_3d(ax3, state["radiological"])
         for slider, (_name, axis, _color) in zip(sliders, PLANES):
             slider.valmin = 0
             slider.valmax = max(data.shape[axis] - 1, 1)
