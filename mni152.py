@@ -6,6 +6,7 @@ A menu between the 3D view and the sliders opens another NIfTI file.
 """
 
 from pathlib import Path
+import tkinter
 
 import matplotlib.pyplot as plt
 import nibabel as nib
@@ -39,6 +40,168 @@ PANEL_ORDER = (2, 1, 0)
 # Axial and coronal put subject right on the image left. The L is subject left.
 LETTER_AXES = (1, 2)
 SETTLE_MS = 80
+
+
+def _work_area(window):
+    """Origin and size, in pixels, of the screen above the taskbar."""
+    import ctypes
+
+    user32 = ctypes.windll.user32
+
+    class RECT(ctypes.Structure):
+        _fields_ = (
+            ("left", ctypes.c_long),
+            ("top", ctypes.c_long),
+            ("right", ctypes.c_long),
+            ("bottom", ctypes.c_long),
+        )
+
+    class MONITORINFO(ctypes.Structure):
+        _fields_ = (
+            ("cbSize", ctypes.c_ulong),
+            ("rcMonitor", RECT),
+            ("rcWork", RECT),
+            ("dwFlags", ctypes.c_ulong),
+        )
+
+    info = MONITORINFO()
+    info.cbSize = ctypes.sizeof(MONITORINFO)
+    monitor = user32.MonitorFromWindow(int(window.wm_frame(), 16), 2)
+    if monitor and user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+        area = info.rcWork
+        return area.left, area.top, area.right - area.left, area.bottom - area.top
+    return 0, 0, window.winfo_screenwidth(), window.winfo_screenheight()
+
+
+def _frame_box(window):
+    """Outer window rectangle, or None while it is still unrealized."""
+    import ctypes
+
+    user32 = ctypes.windll.user32
+
+    class RECT(ctypes.Structure):
+        _fields_ = (
+            ("left", ctypes.c_long),
+            ("top", ctypes.c_long),
+            ("right", ctypes.c_long),
+            ("bottom", ctypes.c_long),
+        )
+
+    rect = RECT()
+    if not user32.GetWindowRect(int(window.wm_frame(), 16), ctypes.byref(rect)):
+        return None
+    width = rect.right - rect.left
+    height = rect.bottom - rect.top
+    if width < 50 or height < 50:
+        return None
+    return rect.left, rect.top, width, height
+
+
+def _screen_margin(work_w, work_h):
+    """Gap that keeps the frame a little inside the work area."""
+    return max(40, int(round(work_w * 0.02))), max(40, int(round(work_h * 0.02)))
+
+
+def _pixel_ratio(fig, window):
+    """Physical pixels per inch of figure size, including display scaling."""
+    ratio = getattr(fig.canvas, "device_pixel_ratio", 1.0) or 1.0
+    if ratio > 1.01:
+        return fig.dpi
+    try:
+        scaling = float(window.tk.call("tk", "scaling"))
+        ratio = round(scaling / (96 / 72), 2)
+    except (AttributeError, ValueError, tkinter.TclError):
+        ratio = 1.0
+    if ratio <= 0:
+        ratio = 1.0
+    return fig.dpi * ratio
+
+
+def _frame_chrome(window, widget):
+    """Extra width and height of the outer frame around the canvas."""
+    box = _frame_box(window)
+    if box is None:
+        return None
+    _left, _top, outer_w, outer_h = box
+    chrome_w = outer_w - widget.winfo_width()
+    chrome_h = outer_h - widget.winfo_height()
+    if chrome_w < 8 or chrome_h < 30 or widget.winfo_width() < 50:
+        return None
+    return chrome_w, chrome_h
+
+
+def _center_window(window):
+    box = _frame_box(window)
+    if box is None:
+        return
+    _x, _y, outer_w, outer_h = box
+    left, top, work_w, work_h = _work_area(window)
+    x = left + (work_w - outer_w) // 2
+    y = top + (work_h - outer_h) // 2
+    window.geometry(f"+{int(x)}+{int(y)}")
+
+
+def _apply_fit(fig, design, tries=12):
+    """Fit the designed figure inside the work area once the window is mapped."""
+    window = fig.canvas.manager.window
+    widget = fig.canvas._tkcanvas
+    window.update_idletasks()
+    px_per_in = _pixel_ratio(fig, window)
+    design_w, design_h = design
+    # The map handler scales the canvas up to the display. Measuring before
+    # that lands reports the unscaled widget against a scaled frame.
+    if widget.winfo_width() < design_w * px_per_in * 0.9:
+        if tries > 0:
+            window.after(50, _apply_fit, fig, design, tries - 1)
+            return
+        _center_window(window)
+        return
+    chrome = _frame_chrome(window, widget)
+    if chrome is None:
+        if tries > 0:
+            window.after(50, _apply_fit, fig, design, tries - 1)
+        else:
+            _center_window(window)
+        return
+    chrome_w, chrome_h = chrome
+    try:
+        _left, _top, work_w, work_h = _work_area(window)
+    except (OSError, AttributeError, ValueError):
+        return
+    margin_x, margin_y = _screen_margin(work_w, work_h)
+    max_canvas_w = work_w - 2 * margin_x - chrome_w
+    max_canvas_h = work_h - 2 * margin_y - chrome_h
+    if max_canvas_w < 200 or max_canvas_h < 200 or px_per_in <= 0:
+        return
+    scale = min(
+        1.0,
+        max_canvas_w / (design_w * px_per_in),
+        max_canvas_h / (design_h * px_per_in),
+    )
+    if scale < 0.999:
+        fig.set_size_inches((design_w * scale, design_h * scale), forward=True)
+        window.update_idletasks()
+    _center_window(window)
+
+
+def _fit_window(fig):
+    """Open the window a little inside the screen.
+
+    The frame's real pixel size, including the title bar, is known only
+    after the window is mapped.
+    """
+    manager = getattr(fig.canvas, "manager", None)
+    window = getattr(manager, "window", None)
+    widget = getattr(fig.canvas, "_tkcanvas", None)
+    if window is None or widget is None:
+        return
+    design = tuple(float(size) for size in fig.get_size_inches())
+
+    def place(_event):
+        widget.unbind("<Map>", token)
+        window.after(50, _apply_fit, fig, design)
+
+    token = widget.bind("<Map>", place, add="+")
 
 
 class _ResampleStyle:
@@ -531,6 +694,7 @@ def draw(path):
 
     fig = plt.figure(figsize=(11.6, 11.2))
     fig_w, fig_h = fig.get_size_inches()
+    _fit_window(fig)
     # Equal cells in a cluster, with room outside the group. Left-column
     # views sit on the gutter; right-column views do the same.
     margin_x = 1.15
