@@ -19,6 +19,8 @@ View brain slices of the MNI152 dataset with visualization of brain slice planes
 
 The window opens on the uncommented `PATH` near the top of `mni152.py`. The menu between the 3D view and the sliders switches to any other NIfTI file next to the script. The default is the 0.5 mm ICBM 2009b nonlinear asymmetric template.
 
+![](mni_icbm152_t1_tal_nlin_asym_09b_hires.nii.png)
+
 ## mni152-asymmetry.ipynb
 
 Left–right asymmetry of the ICBM 2009c asymmetric T1. A raw mirror subtraction, the same map after a blur (right frontal and left occipital petalia), and a left-versus-right look at the lateral fissure.
