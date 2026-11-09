@@ -10,6 +10,8 @@ Asymmetry starts off. Turning it on colors each slice by the volume minus
 its left–right mirror after an 8 mm blur. Red means this side is brighter.
 The line under the file name is left minus right in the hemisphere, frontal
 lobe, occipital lobe, and lateral fissure.
+Reset, beside Asymmetry, puts the slices back on the origin, selects
+neurological, and turns those colors off. The open file stays.
 
 With no arguments the default template opens. Pass a .nii or .nii.gz path
 to open that file instead: python mni152.py volume.nii
@@ -1478,6 +1480,70 @@ class _AsymmetryToggle:
         return True
 
 
+class _ResetButton:
+    """Pill in the title band. Restores the opening view of the current file."""
+
+    LABEL = "Reset"
+
+    def __init__(self, fig):
+        self._hover = False
+        self.ax = fig.add_axes([0.0, 0.0, 0.08, 0.03], zorder=6)
+        self.ax.set_navigate(False)
+        self.ax.set_xlim(0, 1)
+        self.ax.set_ylim(0, 1)
+        self.ax.set_xticks([])
+        self.ax.set_yticks([])
+        self.ax.patch.set_visible(False)
+        self.ax.set_autoscale_on(False)
+        for spine in self.ax.spines.values():
+            spine.set_visible(False)
+        self._fill = PathPatch(
+            _rounded_rect_path(0, 0, 1, 1, 0.2, 0.2),
+            transform=self.ax.transAxes,
+            facecolor=CANVAS, edgecolor="none",
+            zorder=1, clip_on=False,
+        )
+        self._border = PathPatch(
+            _rounded_rect_path(0, 0, 1, 1, 0.2, 0.2),
+            transform=self.ax.transAxes,
+            facecolor="none", edgecolor=LINE, linewidth=1.0,
+            joinstyle="round", capstyle="round",
+            zorder=4, clip_on=False,
+        )
+        self.ax.add_patch(self._fill)
+        self.ax.add_patch(self._border)
+        self._label = self.ax.text(
+            0.5, 0.5, self.LABEL,
+            ha="center", va="center", color=INK,
+            clip_on=False, zorder=5, fontproperties=_font(9.5),
+        )
+
+    def place(self, rect):
+        self.ax.set_position(rect)
+        self.ax.set_xlim(0, 1)
+        self.ax.set_ylim(0, 1)
+        rx, ry = _axes_radii(self.ax, CORNER_IN)
+        shape = _rounded_rect_path(0, 0, 1, 1, rx, ry)
+        self._fill.set_path(shape)
+        self._border.set_path(shape)
+
+    def _paint(self):
+        self._fill.set_facecolor(WASH if self._hover else CANVAS)
+        self._border.set_edgecolor(LINE)
+        self._label.set_color(INK)
+
+    def hit(self, event):
+        return event.inaxes is self.ax
+
+    def hover(self, over):
+        over = bool(over)
+        if over == self._hover:
+            return False
+        self._hover = over
+        self._paint()
+        return True
+
+
 def draw(path):
     _use_ui_type()
     path = Path(path).resolve()
@@ -1509,7 +1575,7 @@ def draw(path):
     _white_window(fig)
     # Equal cells in a cluster, with room outside the group. Left-column
     # views sit on the gutter; right-column views do the same.
-    # The top band holds the file name, the asymmetry numbers, and one
+    # The top band holds the file name, Reset, Asymmetry, the numbers, and one
     # line that says what the colors mean. The inches are the design
     # figure; the window fit scales them down, and the type does not.
     margin_x = 1.15
@@ -1537,6 +1603,7 @@ def draw(path):
     def set_heading(name):
         scale = header_scale()
         room = (design_w - 2 * margin_x) * scale - 0.16
+        room -= _text_width_in(reset_button.LABEL, 9.5) + 0.48
         if asym_toggle.available:
             room -= _text_width_in(asym_toggle.LABEL, 9.5) + 0.48
         text = fig.suptitle(
@@ -1774,6 +1841,7 @@ def draw(path):
         radiological=state["radiological"],
     )
     asym_toggle = _AsymmetryToggle(fig, on=state["show_asym"])
+    reset_button = _ResetButton(fig)
     header_artists = []
 
     def _header_text(x_in, y_in, text, color, size=9.5, weight=400):
@@ -1798,15 +1866,30 @@ def draw(path):
         # span measured in type has to be stored in design inches.
         return actual_in / max(header_scale(), 0.35)
 
-    def place_asym_toggle():
+    def place_header_controls():
+        """Asymmetry at the right margin, Reset just to its left.
+
+        Point size stays fixed when the window shrinks, so a control's
+        figure fraction grows by the same scale the header type uses.
+        """
         scale = max(header_scale(), 0.35)
-        actual_w = _text_width_in(asym_toggle.LABEL, 9.5) + 0.36
         actual_h = 0.26
-        frac_w = (actual_w / scale) / design_w
-        frac_h = (actual_h / scale) / design_h
-        x = (design_w - margin_x) / design_w - frac_w
-        y = (1 - title_from_top / design_h) - frac_h / 2
-        asym_toggle.place([x, y, frac_w, frac_h])
+        gap = 0.12
+        cursor = design_w - margin_x
+
+        def place(button, label):
+            nonlocal cursor
+            actual_w = _text_width_in(label, 9.5) + 0.36
+            frac_w = (actual_w / scale) / design_w
+            frac_h = (actual_h / scale) / design_h
+            x = cursor / design_w - frac_w
+            y = (1 - title_from_top / design_h) - frac_h / 2
+            button.place([x, y, frac_w, frac_h])
+            cursor -= actual_w / scale + gap / scale
+
+        if asym_toggle.available:
+            place(asym_toggle, asym_toggle.LABEL)
+        place(reset_button, reset_button.LABEL)
 
     def show_readout():
         _drop_header()
@@ -1820,9 +1903,9 @@ def draw(path):
                 margin_x, stats_from_top,
                 _ellipsize(note, budget, size), MUTED, size,
             )
+            place_header_controls()
             return
         asym_toggle.set_available(True)
-        place_asym_toggle()
         x = margin_x
         gap = 0.22
         prefix = f"{SIGMA_MM:.0f} mm"
@@ -1866,6 +1949,7 @@ def draw(path):
                 legend_x + _design_span(lead_w + 0.08),
                 note_from_top, rest, MUTED, size,
             )
+        place_header_controls()
 
     def reflow_header():
         show_readout()
@@ -2163,7 +2247,52 @@ def draw(path):
         step = 1 if event.step > 0 else -1
         set_plane(panel["axis"], int(sliders[panel["axis"]].val) + step)
 
+    def reset_view():
+        """Slices on the origin, neurological, asymmetry off. The file stays."""
+        origin = index_at_world_zero(state["affine"], state["data"].shape)
+        slices_same = all(
+            int(slider.val) == int(origin[axis])
+            for slider, (_name, axis, _color) in zip(sliders, PLANES)
+        )
+        menu_open = menu.is_open
+        if (
+            slices_same
+            and not state["radiological"]
+            and not state["show_asym"]
+            and not menu_open
+        ):
+            return
+        if menu_open:
+            menu.close_menu()
+        convention.select(False)
+        state["radiological"] = False
+        if state["show_asym"]:
+            asym_toggle.on = False
+            asym_toggle._paint()
+            state["show_asym"] = False
+        for slider, (_name, axis, _color) in zip(sliders, PLANES):
+            index = int(origin[axis])
+            slider.eventson = False
+            slider.set_val(index)
+            slider.eventson = True
+        drag["axis"] = None
+        pending["dirty"] = False
+        pending["running"] = False
+        timer.stop()
+        for panel in panels:
+            sync_panel(panel, int(origin[panel["axis"]]))
+        _orient_3d(ax3, False)
+        was_ready = shown["ready"]
+        shown["ready"] = False
+        reflow_header()
+        refresh_2d()
+        refresh_3d()
+        shown["ready"] = was_ready
+
     def on_press(event):
+        if event.button == 1 and reset_button.hit(event):
+            reset_view()
+            return
         if event.button == 1 and asym_toggle.hit(event):
             closed = menu.is_open
             if closed:
@@ -2223,6 +2352,8 @@ def draw(path):
             changed = True
         if asym_toggle.hover(asym_toggle.hit(event)):
             changed = True
+        if reset_button.hover(reset_button.hit(event)):
+            changed = True
         if changed and drag["axis"] is None:
             fig.canvas.draw_idle()
         axis = drag["axis"]
@@ -2259,6 +2390,7 @@ def draw(path):
     fig._volume_menu = menu
     fig._convention_toggle = convention
     fig._asymmetry_toggle = asym_toggle
+    fig._reset_button = reset_button
     fig._reflow_header = reflow_header
 
     for slider, (_name, axis, _color) in zip(sliders, PLANES):
