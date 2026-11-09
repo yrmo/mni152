@@ -185,17 +185,43 @@ def _pixel_ratio(fig, window):
     return fig.dpi * ratio
 
 
-def _frame_chrome(window, widget):
-    """Extra width and height of the outer frame around the canvas."""
+def _outer_chrome(window, widget):
+    """Title bar and borders, or None when the frame is still clamped.
+
+    A withdrawn canvas reports its size through winfo_reqwidth. The outer
+    frame is that size plus the chrome, until Windows has shrunk the frame
+    to the screen and the difference is no longer the chrome.
+    """
+    window.update_idletasks()
     box = _frame_box(window)
     if box is None:
         return None
+    req_w = widget.winfo_reqwidth()
+    req_h = widget.winfo_reqheight()
     _left, _top, outer_w, outer_h = box
-    chrome_w = outer_w - widget.winfo_width()
-    chrome_h = outer_h - widget.winfo_height()
-    if chrome_w < 8 or chrome_h < 30 or widget.winfo_width() < 50:
+    if req_w < 50 or req_h < 50:
+        return None
+    if outer_w + 2 < req_w or outer_h + 2 < req_h:
+        return None
+    chrome_w = outer_w - req_w
+    chrome_h = outer_h - req_h
+    if chrome_w < 8 or chrome_h < 30:
         return None
     return chrome_w, chrome_h
+
+
+def _measure_chrome(fig, window, widget):
+    """Chrome in pixels. Shrink first when the design frame is already clamped."""
+    chrome = _outer_chrome(window, widget)
+    if chrome is not None:
+        return chrome
+    saved = tuple(float(size) for size in fig.get_size_inches())
+    fig.set_size_inches((4.0, 3.0), forward=True)
+    try:
+        return _outer_chrome(window, widget)
+    finally:
+        fig.set_size_inches(saved, forward=True)
+        window.update_idletasks()
 
 
 def _center_window(window):
@@ -209,78 +235,115 @@ def _center_window(window):
     window.geometry(f"+{int(x)}+{int(y)}")
 
 
-def _apply_fit(fig, design, tries=12):
-    """Fit the designed figure inside the work area once the window is mapped."""
-    window = fig.canvas.manager.window
-    widget = fig.canvas._tkcanvas
-    _white_window(fig)
-    window.update_idletasks()
-    px_per_in = _pixel_ratio(fig, window)
-    design_w, design_h = design
-    # The map handler scales the canvas up to the display. Measuring before
-    # that lands reports the unscaled widget against a scaled frame.
-    if widget.winfo_width() < design_w * px_per_in * 0.9:
-        if tries > 0:
-            window.after(50, _apply_fit, fig, design, tries - 1)
-            return
-        _center_window(window)
-        return
-    chrome = _frame_chrome(window, widget)
-    if chrome is None:
-        if tries > 0:
-            window.after(50, _apply_fit, fig, design, tries - 1)
-        else:
-            _center_window(window)
-        return
+def _fit_scale(fig, window, chrome):
+    """Scale that keeps the design inside the work area, or None."""
     chrome_w, chrome_h = chrome
     try:
         _left, _top, work_w, work_h = _work_area(window)
     except (OSError, AttributeError, ValueError):
-        return
+        return None
     margin_x, margin_y = _screen_margin(work_w, work_h)
     max_canvas_w = work_w - 2 * margin_x - chrome_w
     max_canvas_h = work_h - 2 * margin_y - chrome_h
+    design_w, design_h = (float(size) for size in fig.get_size_inches())
+    px_per_in = _pixel_ratio(fig, window)
     if max_canvas_w < 200 or max_canvas_h < 200 or px_per_in <= 0:
-        return
-    scale = min(
+        return None
+    if design_w <= 0 or design_h <= 0:
+        return None
+    return min(
         1.0,
         max_canvas_w / (design_w * px_per_in),
         max_canvas_h / (design_h * px_per_in),
     )
-    if scale < 0.999:
-        fig.set_size_inches((design_w * scale, design_h * scale), forward=True)
-    # Point size stays put while the figure shrinks. The closed menu stays
-    # as wide as the sliders; an open list grows so the names still fit.
-    # The header reflows for the same reason: its type does not shrink.
-    reflow = getattr(fig, "_reflow_header", None)
-    if reflow is not None:
-        reflow()
-    menu = getattr(fig, "_volume_menu", None)
-    if (menu is not None and menu.fit_width()) or (reflow is not None and scale < 0.999):
+
+
+def _reveal_when_shown(fig, window, widget):
+    """Stay transparent until the first map has painted the final size.
+
+    Mapping the window recreates the canvas image. Revealing on that same
+    turn would show the empty image. The idle draw runs first; the window
+    becomes opaque on the timer that follows it.
+    """
+    revealed = {"done": False}
+
+    def show_window():
+        try:
+            window.attributes("-alpha", 1.0)
+        except tkinter.TclError:
+            pass
+
+    def reveal(_event=None):
+        if revealed["done"] or str(window.state()) == "withdrawn":
+            return
+        revealed["done"] = True
+        try:
+            widget.unbind("<Map>", token)
+        except tkinter.TclError:
+            pass
         fig.canvas.draw_idle()
-    window.update_idletasks()
-    _center_window(window)
+        window.after(50, show_window)
+
+    token = widget.bind("<Map>", reveal, add="+")
+    window.after(1000, reveal)
 
 
 def _fit_window(fig):
-    """Open the window a little inside the screen.
+    """Size and center the window before it is shown.
 
-    The frame's real pixel size, including the title bar, is known only
-    after the window is mapped.
+    The display scale and the fit to the work area used to run after the
+    window was already on screen, so it stepped through several sizes.
+    Both are applied while the window is withdrawn. It stays transparent
+    across the first map, then appears once, at the final size.
     """
     manager = getattr(fig.canvas, "manager", None)
     window = getattr(manager, "window", None)
     widget = getattr(fig.canvas, "_tkcanvas", None)
     if window is None or widget is None:
         return
-    design = tuple(float(size) for size in fig.get_size_inches())
     _white_window(fig)
-
-    def place(_event):
-        widget.unbind("<Map>", token)
-        window.after(50, _apply_fit, fig, design)
-
-    token = widget.bind("<Map>", place, add="+")
+    hidden = str(window.state()) == "withdrawn"
+    if hidden:
+        try:
+            window.attributes("-alpha", 0.0)
+        except tkinter.TclError:
+            hidden = False
+    # Chrome before the display scale. Scaling first makes a tall figure
+    # larger than the screen, and Windows then clamps the frame.
+    design = tuple(float(size) for size in fig.get_size_inches())
+    chrome = _measure_chrome(fig, window, widget)
+    update_ratio = getattr(fig.canvas, "_update_device_pixel_ratio", None)
+    if update_ratio is not None:
+        update_ratio()
+    fig.set_size_inches(design, forward=False)
+    scale = None if chrome is None else _fit_scale(fig, window, chrome)
+    if scale is not None and scale < 0.999:
+        fig.set_size_inches((design[0] * scale, design[1] * scale), forward=True)
+    elif update_ratio is not None:
+        fig.set_size_inches(design, forward=True)
+    window.update_idletasks()
+    # One correction when the frame is still clamped, still unseen.
+    box = _frame_box(window)
+    req_w = widget.winfo_reqwidth()
+    req_h = widget.winfo_reqheight()
+    if (
+        box is not None
+        and req_w > 50
+        and req_h > 50
+        and (box[2] + 2 < req_w or box[3] + 2 < req_h)
+    ):
+        shrink = min(box[2] / req_w, box[3] / req_h)
+        if 0 < shrink < 0.999:
+            width, height = (float(size) for size in fig.get_size_inches())
+            fig.set_size_inches((width * shrink, height * shrink), forward=True)
+            window.update_idletasks()
+    menu = getattr(fig, "_volume_menu", None)
+    if menu is not None and menu.fit_width():
+        fig.canvas.draw_idle()
+    _center_window(window)
+    window.update_idletasks()
+    if hidden:
+        _reveal_when_shown(fig, window, widget)
 
 
 class _ResampleStyle:
@@ -1567,11 +1630,10 @@ def draw(path):
 
     fig = plt.figure(figsize=(11.6, 11.2))
     fig.patch.set_facecolor(CANVAS)
-    # Layout fractions stay on these inches. The window may shrink later;
-    # point size does not, so the header reflows against that scale.
+    # Layout fractions stay on these inches. The window may shrink later,
+    # before it is shown; point size does not, so the header reflows.
     design_w, design_h = fig.get_size_inches()
     fig_w, fig_h = design_w, design_h
-    _fit_window(fig)
     _white_window(fig)
     # Equal cells in a cluster, with room outside the group. Left-column
     # views sit on the gutter; right-column views do the same.
@@ -2397,6 +2459,9 @@ def draw(path):
         slider.valtext.set_text(_position_text(affine, axis, indices[axis]))
     for panel in panels:
         paint_overlay(panel, indices[panel["axis"]])
+    # The final size has to be set before the header reflows, and before
+    # the window is shown, or the screen steps through the sizes in between.
+    _fit_window(fig)
     reflow_header()
     refresh_3d()
     pending["dirty"] = False
