@@ -1,0 +1,71 @@
+License notices for the NIfTI volumes in this repository.
+
+icbm_avg_152_t1_tal_lin.nii
+Source: https://nist.mni.mcgill.ca/icbm-152lin/
+
+Copyright (C) 1993–2009 Louis Collins, McConnell Brain Imaging Centre,
+Montreal Neurological Institute, McGill University.
+Permission to use, copy, modify, and distribute this software and its
+documentation for any purpose and without fee is hereby granted,
+provided that the above copyright notice appear in all copies.
+The authors and McGill University make no representations about the
+suitability of this software for any purpose. It is provided "as is"
+without express or implied warranty. The authors are not responsible
+for any data loss, equipment damage, property loss, or injury to
+subjects or patients resulting from the use or misuse of this software
+package.
+
+mni_icbm152_t1_tal_nlin_asym_09c.nii
+mni_icbm152_t1_tal_nlin_asym_09b_hires.nii
+mni152.nii
+mni152.nii is a low-resolution derivative of the ICBM 152 nonlinear
+atlases, 2009.
+Source: https://nist.mni.mcgill.ca/icbm-152-nonlinear-atlases-2009/
+
+Copyright (C) 1993–2004 Louis Collins, McConnell Brain Imaging Centre,
+Montreal Neurological Institute, McGill University.
+Permission to use, copy, modify, and distribute this software and its
+documentation for any purpose and without fee is hereby granted,
+provided that the above copyright notice appear in all copies.
+The authors and McGill University make no representations about the
+suitability of this software for any purpose. It is provided "as is"
+without express or implied warranty. The authors are not responsible
+for any data loss, equipment damage, property loss, or injury to
+subjects or patients resulting from the use or misuse of this software
+package.
+
+When using a 2009 atlas, cite Fonov et al., NeuroImage 54(1), 313–327,
+2011 (doi:10.1016/j.neuroimage.2010.07.033) and Fonov et al.,
+NeuroImage 47(Suppl. 1), S102, 2009 (doi:10.1016/S1053-8119(09)70884-5).
+
+mni152.nii is also the file redistributed by NiiVue demo images
+(https://github.com/niivue/niivue-demo-images), under the BSD 2-Clause
+License. The Collins notice above still applies to the image.
+
+BSD 2-Clause License
+
+Copyright (c) 2022, Chris Rorden
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+1. Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright
+   notice, this list of conditions and the following disclaimer in the
+   documentation and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS
+IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
+PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED
+TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.

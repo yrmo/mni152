@@ -40,10 +40,9 @@ ROOT = Path(__file__).resolve().parent
 # Volume opened at startup when no file is given on the command line.
 # The menu under the 3D view lists every NIfTI file next to this script.
 # https://niivue.github.io/niivue-demo-images/mni152.nii.gz
+# Licenses for the volumes in this folder are in LICENSE.
 PATH = ROOT / "mni152.nii"
 # PATH = ROOT / "icbm_avg_152_t1_tal_lin.nii"
-# PATH = ROOT / "minimal.nii"
-# PATH = ROOT / "avg152T1_RL_nifti.nii"
 # PATH = ROOT / "mni_icbm152_t1_tal_nlin_asym_09c.nii"
 # PATH = ROOT / "mni_icbm152_t1_tal_nlin_asym_09b_hires.nii"
 

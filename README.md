@@ -2,16 +2,18 @@
 
 ## Dataset
 
-| Dataset | File in this repo | Link |
-|---------|-------------------|------|
-| Linear ICBM Average Brain (ICBM152) | `icbm_avg_152_t1_tal_lin.nii` | [NIFTI 41MB](https://nist.mni.mcgill.ca/icbm-152lin/) |
-| MNI152 (NiiVue) | `mni152.nii` | [NIFTI 4.1MB](https://niivue.github.io/niivue-demo-images/mni152.nii.gz) |
-| minimal | `minimal.nii` | [NIFTI 455B](https://nifti.nimh.nih.gov/nifti-1/data/minimal.nii.gz/file_view.html) |
-| avg152T1 RL | `avg152T1_RL_nifti.nii` | [NIFTI 519kB](https://nifti.nimh.nih.gov/nifti-1/data/avg152T1_RL_nifti.nii.gz/file_view.html) |
-| ICBM 2009c Nonlinear Asymmetric | `mni_icbm152_t1_tal_nlin_asym_09c.nii` | [NIFTI 57MB](https://www.bic.mni.mcgill.ca/~vfonov/icbm/2009/mni_icbm152_nlin_asym_09c_nifti.zip) |
-| ICBM 2009b Nonlinear Asymmetric | `mni_icbm152_t1_tal_nlin_asym_09b_hires.nii`** | [NIFTI 358MB](https://www.bic.mni.mcgill.ca/~vfonov/icbm/2009/mni_icbm152_nlin_asym_09b_nifti.zip) |
+| Dataset | File in this repo | Link | License |
+|---------|-------------------|------|---------|
+| Linear ICBM Average Brain (ICBM152) | `icbm_avg_152_t1_tal_lin.nii` | [NIFTI 41MB](https://nist.mni.mcgill.ca/icbm-152lin/) | Collins, 1993–2009 |
+| MNI152 (NiiVue) | `mni152.nii` | [NIFTI 4.1MB](https://niivue.github.io/niivue-demo-images/mni152.nii.gz) | Collins, 1993–2004, and BSD-2-Clause |
+| ICBM 2009c Nonlinear Asymmetric | `mni_icbm152_t1_tal_nlin_asym_09c.nii` | [NIFTI 57MB](https://www.bic.mni.mcgill.ca/~vfonov/icbm/2009/mni_icbm152_nlin_asym_09c_nifti.zip) | Collins, 1993–2004 |
+| ICBM 2009b Nonlinear Asymmetric | `mni_icbm152_t1_tal_nlin_asym_09b_hires.nii`** | [NIFTI 358MB](https://www.bic.mni.mcgill.ca/~vfonov/icbm/2009/mni_icbm152_nlin_asym_09b_nifti.zip) | Collins, 1993–2004 |
 
-**Not committed due to filesize
+**Not committed due to filesize.
+
+`minimal.nii` and `avg152T1_RL_nifti.nii` are not included. The [NIfTI-1 test data](https://nifti.nimh.nih.gov/nifti-1/data) page states no license for them.
+
+License text is in [LICENSE](LICENSE).
 
 ## mni152.py
 
