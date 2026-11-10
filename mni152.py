@@ -826,7 +826,11 @@ def _position_text(affine, axis, index):
     mm = _axis_mm(affine, axis, index)
     if mm is None:
         return str(int(index))
-    return f"{'xyz'[axis]} = {mm:.0f} mm"
+    shown = f"{mm:.0f}"
+    # Within half a millimetre below zero this rounds to "-0".
+    if shown == "-0":
+        shown = "0"
+    return f"{'xyz'[axis]} = {shown} mm"
 
 
 def _is_nifti(path):
